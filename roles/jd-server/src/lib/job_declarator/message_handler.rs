@@ -7,7 +7,7 @@ use roles_logic_sv2::{
         ProvideMissingTransactions, ProvideMissingTransactionsSuccess, SubmitSolutionJd,
     },
     parsers::JobDeclaration,
-    utils::Mutex,
+    utils::Mutex
 };
 use std::{convert::TryInto, io::Cursor, sync::Arc};
 use stratum_common::bitcoin::{Transaction, Txid};
@@ -41,50 +41,38 @@ impl JobDeclaratorDownstream {
     }
 }
 
-pub fn clear_declared_mining_job(
-    mining_job: DeclareMiningJob,
+pub fn clear_old_mempool_transactions(
+    old_declare_mining_job: Option<DeclareMiningJob>,
     mempool: Arc<Mutex<JDsMempool>>,
 ) -> Result<(), Error> {
-    // If there is an old declared mining job, remove its transactions from the mempool
-    // Retrieve necessary data from the old job
-    let transactions_to_remove = mining_job.tx_short_hash_list.inner_as_ref();
-    if transactions_to_remove.is_empty() {
-        info!("No transactions to remove from mempool");
-        return Ok(());
-    }
+     // If there is an old declared mining job, remove its transactions from the mempool
+     if let Some(old_job) = old_declare_mining_job {
+        // Retrieve necessary data from the old job
+        let old_tx_hash_list = old_job.tx_short_hash_list.inner_as_ref();
+        let old_nonce = old_job.tx_short_hash_nonce;
 
-    let nonce = mining_job.tx_short_hash_nonce;
+        // Get the mempool of the old transaction IDs
+        let old_short_id_mempool = mempool
+        .safe_lock(|x| x.to_short_ids(old_nonce))
+        .unwrap()
+        .unwrap();
 
-    for short_id in transactions_to_remove {
-        let result = mempool.safe_lock(|mempool_| -> Result<(), Error> {
-            // Try to manage this unwrap, we use .ok_or() method to return the proper error
-            let short_ids_map = mempool_
-                .to_short_ids(nonce)
-                .ok_or(Error::JDSMissingTransactions)?;
-            let transaction_with_hash = short_ids_map
-                .get(short_id);
+        // Convert old transaction IDs to short IDs
+        let old_short_hash_list: Vec<[u8; 6]> = old_tx_hash_list
+            .iter()
+            .map(|x| x.to_vec().try_into().unwrap())
+            .collect();
 
-            match transaction_with_hash {
-                Some(transaction_with_hash) => {
-                    let txid = transaction_with_hash.id;
-                    match mempool_.mempool.remove(&txid) {
-                        Some(transaction) => {
-                            debug!("Fat transaction {:?} in job with request id {:?} removed from mempool", transaction, mining_job.request_id);
-                            info!("Fat transaction {:?} in job with request id {:?} removed from mempool", txid, mining_job.request_id);
-                        },
-                        None => info!("Thin transaction {:?} in job with request id {:?} removed from mempool", txid, mining_job.request_id),
-                    }
-                },
-                None => debug!("Transaction with short id {:?} not found in mempool while clearing old jobs", short_id),
+        // Remove transactions from the mempool of the old job
+        let _ = mempool.safe_lock(|x| {
+            for short_id in old_short_hash_list {
+                if let Some(tx_data) = old_short_id_mempool.get(&short_id) {
+                    x.mempool.remove(&tx_data.id);
+                }
             }
-            Ok(())  // Explicitly return Ok(()) inside the closure for proper flow control
         });
-
-        // Propagate any error from the closure
-        if let Err(err) = result {
-            return Err(Error::PoisonLock(err.to_string()));
-        }
     }
+
     Ok(())
 }
 
@@ -113,9 +101,9 @@ impl ParseClientJobDeclarationMessages for JobDeclaratorDownstream {
     fn handle_declare_mining_job(&mut self, message: DeclareMiningJob) -> Result<SendTo, Error> {
         {
             // Clone the old declared mining job to retain its data
-            if let Some(old_declare_mining_job_) = self.declared_mining_job.0.clone() {
-                clear_declared_mining_job(old_declare_mining_job_, self.mempool.clone())?;
-            }
+            let old_declare_mining_job_ = self.declared_mining_job.0.clone();
+
+            clear_old_mempool_transactions(old_declare_mining_job_, self.mempool.clone())?;
         }
 
         // the transactions that are present in the mempool are stored here, that is sent to the
