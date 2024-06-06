@@ -7,7 +7,7 @@ use roles_logic_sv2::{
         ProvideMissingTransactions, ProvideMissingTransactionsSuccess, SubmitSolutionJd,
     },
     parsers::JobDeclaration,
-    utils::Mutex
+    utils::Mutex,
 };
 use std::{convert::TryInto, io::Cursor, sync::Arc};
 use stratum_common::bitcoin::{Transaction, Txid};
@@ -45,17 +45,17 @@ pub fn clear_old_mempool_transactions(
     old_declare_mining_job: Option<DeclareMiningJob>,
     mempool: Arc<Mutex<JDsMempool>>,
 ) -> Result<(), Error> {
-     // If there is an old declared mining job, remove its transactions from the mempool
-     if let Some(old_job) = old_declare_mining_job {
+    // If there is an old declared mining job, remove its transactions from the mempool
+    if let Some(old_job) = old_declare_mining_job {
         // Retrieve necessary data from the old job
         let old_tx_hash_list = old_job.tx_short_hash_list.inner_as_ref();
         let old_nonce = old_job.tx_short_hash_nonce;
 
         // Get the mempool of the old transaction IDs
         let old_short_id_mempool = mempool
-        .safe_lock(|x| x.to_short_ids(old_nonce))
-        .unwrap()
-        .unwrap();
+            .safe_lock(|x| x.to_short_ids(old_nonce))
+            .unwrap()
+            .unwrap();
 
         // Convert old transaction IDs to short IDs
         let old_short_hash_list: Vec<[u8; 6]> = old_tx_hash_list
