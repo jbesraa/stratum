@@ -98,10 +98,6 @@ impl JDsMempool {
         let mut new_jds_mempool: HashMap<Txid, Option<Transaction>> =
             self_.safe_lock(|x| x.mempool.clone())?;
 
-        // the fat transactions in the jds-mempool are those declared by some downstream and we
-        // don't want to remove them, but we can get rid of transactions that are none
-        new_jds_mempool.retain(|_, val| val.is_some());
-
         let client = self_
             .safe_lock(|x| x.get_client())?
             .ok_or(JdsMempoolError::NoClient)?;
@@ -112,7 +108,16 @@ impl JDsMempool {
         for id in &node_mempool {
             let key_id = Txid::from_str(id)
                 .map_err(|err| JdsMempoolError::Rpc(RpcError::Deserialization(err.to_string())))?;
-            new_jds_mempool.entry(key_id).or_insert(None);
+
+            if !new_jds_mempool.contains_key(&key_id) {
+                // Get the transaction data
+                let transaction = client
+                    .get_raw_transaction(&id.to_string(), None)
+                    .await
+                    .map_err(JdsMempoolError::Rpc)?;
+
+                new_jds_mempool.insert(key_id, Some(transaction));
+            }
         }
 
         if new_jds_mempool.is_empty() {

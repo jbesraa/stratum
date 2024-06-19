@@ -41,34 +41,19 @@ impl JobDeclaratorDownstream {
     }
 }
 
-pub fn clear_old_mempool_transactions(
+pub fn clear_old_mining_jobs(
     old_declare_mining_job: Option<DeclareMiningJob>,
     mempool: Arc<Mutex<JDsMempool>>,
 ) -> Result<(), Error> {
     // If there is an old declared mining job, remove its transactions from the mempool
     if let Some(old_job) = old_declare_mining_job {
         // Retrieve necessary data from the old job
-        let old_tx_hash_list = old_job.tx_short_hash_list.inner_as_ref();
-        let old_nonce = old_job.tx_short_hash_nonce;
+        let old_tx_hash_list = old_job.tx_short_hash_list.inner_as_ref(); // List of transaction hashes (assuming short_hash_list stores full hashes)
 
-        // Get the mempool of the old transaction IDs
-        let old_short_id_mempool = mempool
-            .safe_lock(|x| x.to_short_ids(old_nonce))
-            .unwrap()
-            .unwrap();
-
-        // Convert old transaction IDs to short IDs
-        let old_short_hash_list: Vec<[u8; 6]> = old_tx_hash_list
-            .iter()
-            .map(|x| x.to_vec().try_into().unwrap())
-            .collect();
-
-        // Remove transactions from the mempool of the old job
+        // Remove transactions from the main mempool using Txids directly
         let _ = mempool.safe_lock(|x| {
-            for short_id in old_short_hash_list {
-                if let Some(tx_data) = old_short_id_mempool.get(&short_id) {
-                    x.mempool.remove(&tx_data.id);
-                }
+            for tx_hash in old_tx_hash_list {
+                x.mempool.remove(tx_hash); // Remove using Txid from main mempool
             }
         });
     }
@@ -103,7 +88,7 @@ impl ParseClientJobDeclarationMessages for JobDeclaratorDownstream {
             // Clone the old declared mining job to retain its data
             let old_declare_mining_job_ = self.declared_mining_job.0.clone();
 
-            clear_old_mempool_transactions(old_declare_mining_job_, self.mempool.clone())?;
+            clear_old_mining_jobs(old_declare_mining_job_, self.mempool.clone())?;
         }
 
         // the transactions that are present in the mempool are stored here, that is sent to the
