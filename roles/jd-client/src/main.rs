@@ -261,7 +261,13 @@ async fn initialize_jd(
     upstream_config: lib::proxy_config::Upstream,
     timeout: Duration,
 ) {
-    let proxy_config = process_cli_args().unwrap();
+    let proxy_config = match process_cli_args() {
+        Ok(p) => p,
+        Err(e) => {
+            error!("Failed to read config file: {}", e);
+            return;
+        }
+    };
     let test_only_do_not_send_solution_to_tp = proxy_config
         .test_only_do_not_send_solution_to_tp
         .unwrap_or(false);
@@ -274,7 +280,7 @@ async fn initialize_jd(
     let port = parts
         .next()
         .and_then(|p| p.parse::<u16>().ok())
-        .unwrap_or_else(|| panic!("Invalid pool address {}", upstream_config.pool_address));
+        .unwrap_or_else(|| panic!("Invalid pool address port {}", upstream_config.pool_address));
     let upstream_addr = SocketAddr::new(
         IpAddr::from_str(address)
             .unwrap_or_else(|_| panic!("Invalid pool address {}", upstream_config.pool_address)),
@@ -300,14 +306,14 @@ async fn initialize_jd(
         Ok(upstream) => upstream,
         Err(e) => {
             error!("Failed to create upstream: {}", e);
-            panic!()
+            return;
         }
     };
 
     // Start receiving messages from the SV2 Upstream role
     if let Err(e) = lib::upstream_sv2::Upstream::parse_incoming(upstream.clone()) {
         error!("failed to create sv2 parser: {}", e);
-        panic!()
+        return;
     }
 
     match lib::upstream_sv2::Upstream::setup_connection(
@@ -320,7 +326,7 @@ async fn initialize_jd(
         Ok(_) => info!("Connected to Upstream!"),
         Err(e) => {
             error!("Failed to connect to Upstream EXITING! : {}", e);
-            panic!()
+            return;
         }
     }
 

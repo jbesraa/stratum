@@ -87,25 +87,25 @@ impl JobDeclarator {
         let stream = tokio::net::TcpStream::connect(address).await?;
         let initiator = Initiator::from_raw_k(authority_public_key)?;
         let (mut receiver, mut sender, _, _) =
-            Connection::new(stream, HandshakeRole::Initiator(initiator))
-                .await
-                .expect("impossible to connect");
+            Connection::new(stream, HandshakeRole::Initiator(initiator)).await?;
 
-        let proxy_address = SocketAddr::new(
-            IpAddr::from_str(&config.downstream_address).unwrap(),
-            config.downstream_port,
-        );
+        let downstream_address = IpAddr::from_str(&config.downstream_address)?;
+        let proxy_address = SocketAddr::new(downstream_address, config.downstream_port);
 
         info!(
-            "JD proxy: setupconnection Proxy address: {:?}",
+            "Job Declarator trying to setup connection to: {:?}",
             proxy_address
         );
 
-        SetupConnectionHandler::setup(&mut receiver, &mut sender, proxy_address)
-            .await
-            .unwrap();
-
-        info!("JD CONNECTED");
+        match SetupConnectionHandler::setup(&mut receiver, &mut sender, proxy_address).await {
+            Ok(_) => {
+                info!("Job Declarator connection setup success")
+            }
+            Err(e) => {
+                error!("Error setting Job Declarator connection: {:?}", e);
+                return Err(Error::ConnectionSetup);
+            }
+        };
 
         let min_extranonce_size = config.min_extranonce2_size;
 

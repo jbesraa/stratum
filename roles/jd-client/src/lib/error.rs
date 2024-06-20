@@ -56,6 +56,12 @@ pub enum Error<'a> {
     ChannelErrorSender(ChannelSendError<'a>),
     Uint256Conversion(ParseLengthError),
     Infallible(std::convert::Infallible),
+    /// Errors from `network_helpers_sv2` crate.
+    Network(network_helpers_sv2::Error),
+    /// Errors from prasing network address.
+    NetworkAddressParse(std::net::AddrParseError),
+    /// Errors from setting up connection.
+    ConnectionSetup,
 }
 
 impl<'a> fmt::Display for Error<'a> {
@@ -79,6 +85,9 @@ impl<'a> fmt::Display for Error<'a> {
             Uint256Conversion(ref e) => write!(f, "U256 Conversion Error: `{:?}`", e),
             VecToSlice32(ref e) => write!(f, "Standard Error: `{:?}`", e),
             Infallible(ref e) => write!(f, "Infallible Error:`{:?}`", e),
+            Network(ref e) => write!(f, "Network Error: `{:?}`", e),
+            NetworkAddressParse(ref e) => write!(f, "Network Address Parse Error: `{:?}`", e),
+            ConnectionSetup => write!(f, "Setup Connection Error"),
         }
     }
 }
@@ -134,6 +143,18 @@ impl<'a> From<async_channel::RecvError> for Error<'a> {
 impl<'a> From<tokio::sync::broadcast::error::RecvError> for Error<'a> {
     fn from(e: tokio::sync::broadcast::error::RecvError) -> Self {
         Error::TokioChannelErrorRecv(e)
+    }
+}
+
+impl<'a> From<network_helpers_sv2::Error> for Error<'a> {
+    fn from(e: network_helpers_sv2::Error) -> Self {
+        Error::Network(e)
+    }
+}
+
+impl<'a> From<std::net::AddrParseError> for Error<'a> {
+    fn from(e: std::net::AddrParseError) -> Self {
+        Error::NetworkAddressParse(e)
     }
 }
 

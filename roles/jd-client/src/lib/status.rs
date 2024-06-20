@@ -133,5 +133,13 @@ pub async fn handle_error(
             send_status(sender, e, error_handling::ErrorBranch::Break).await
         }
         Error::Infallible(_) => send_status(sender, e, error_handling::ErrorBranch::Break).await,
+        // Errors from `network_helpers_sv2` crate.
+        Error::Network(_) => send_status(sender, e, error_handling::ErrorBranch::Break).await,
+        // Errors from prasing network address.
+        Error::NetworkAddressParse(_) => {
+            send_status(sender, e, error_handling::ErrorBranch::Break).await
+        }
+        // Errors from setting up connection.
+        Error::ConnectionSetup => send_status(sender, e, error_handling::ErrorBranch::Break).await,
     }
 }
