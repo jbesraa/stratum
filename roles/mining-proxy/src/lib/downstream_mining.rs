@@ -1,7 +1,9 @@
 #![allow(dead_code)]
 
-use super::upstream_mining::{StdFrame as UpstreamFrame, UpstreamMiningNode};
-use async_channel::{Receiver, SendError, Sender};
+use async_channel::{Receiver, Sender, SendError};
+use codec_sv2::{StandardEitherFrame, StandardSv2Frame};
+use core::convert::TryInto;
+use network_helpers_sv2::plain_connection_tokio::PlainConnection;
 use roles_logic_sv2::{
     common_messages_sv2::{SetupConnection, SetupConnectionSuccess},
     common_properties::{CommonDownstreamData, IsDownstream, IsMiningDownstream},
@@ -15,9 +17,11 @@ use roles_logic_sv2::{
     routing_logic::MiningProxyRoutingLogic,
     utils::Mutex,
 };
-use tracing::info;
+use std::sync::Arc;
+use tokio::{net::TcpListener, sync::oneshot::Receiver as TokioReceiver, task};
+use tracing::{error, info};
 
-use codec_sv2::{StandardEitherFrame, StandardSv2Frame};
+use super::upstream_mining::{ProxyRemoteSelector, StdFrame as UpstreamFrame, UpstreamMiningNode};
 
 pub type Message = MiningDeviceMessages<'static>;
 pub type StdFrame = StandardSv2Frame<Message>;
@@ -152,10 +156,6 @@ impl DownstreamMiningNodeStatus {
         }
     }
 }
-
-use core::convert::TryInto;
-use std::sync::Arc;
-use tokio::task;
 
 impl PartialEq for DownstreamMiningNode {
     fn eq(&self, other: &Self) -> bool {
@@ -326,8 +326,6 @@ impl DownstreamMiningNode {
     }
 }
 
-use super::upstream_mining::ProxyRemoteSelector;
-
 /// It impl UpstreamMining cause the proxy act as an upstream node for the DownstreamMiningNode
 impl
     ParseDownstreamMiningMessages<
@@ -483,44 +481,56 @@ impl
     }
 }
 
-use network_helpers_sv2::plain_connection_tokio::PlainConnection;
-use std::net::SocketAddr;
-use tokio::net::TcpListener;
-
-pub async fn listen_for_downstream_mining(address: SocketAddr) {
-    info!("Listening for downstream mining connections on {}", address);
-    let listner = TcpListener::bind(address).await.unwrap();
+pub async fn listen_for_downstream_mining(
+    listener: TcpListener,
+    mut shutdown_rx: TokioReceiver<()>,
+) {
     let mut ids = roles_logic_sv2::utils::Id::new();
+    loop {
+        tokio::select! {
+            accept_result = listener.accept() => {
+                match accept_result {
+                    Ok((stream, _)) => {
+                let (receiver, sender): (Receiver<EitherFrame>, Sender<EitherFrame>) =
+                    PlainConnection::new(stream).await;
+                let node = DownstreamMiningNode::new(receiver, sender, ids.next());
 
-    while let Ok((stream, _)) = listner.accept().await {
-        let (receiver, sender): (Receiver<EitherFrame>, Sender<EitherFrame>) =
-            PlainConnection::new(stream).await;
-        let node = DownstreamMiningNode::new(receiver, sender, ids.next());
+                task::spawn(async move {
+                    let mut incoming: StdFrame =
+                        node.receiver.recv().await.unwrap().try_into().unwrap();
+                    let message_type = incoming.get_header().unwrap().msg_type();
+                    let payload = incoming.payload();
+                    let routing_logic = super::get_common_routing_logic();
+                    let node = Arc::new(Mutex::new(node));
 
-        task::spawn(async move {
-            let mut incoming: StdFrame = node.receiver.recv().await.unwrap().try_into().unwrap();
-            let message_type = incoming.get_header().unwrap().msg_type();
-            let payload = incoming.payload();
-            let routing_logic = super::get_common_routing_logic();
-            let node = Arc::new(Mutex::new(node));
-
-            // Call handle_setup_connection or fail
-            match DownstreamMiningNode::handle_message_common(
-                node.clone(),
-                message_type,
-                payload,
-                routing_logic,
-            ) {
-                Ok(SendToCommon::RelayNewMessageToRemote(_, message)) => {
-                    let message = match message {
-                        roles_logic_sv2::parsers::CommonMessages::SetupConnectionSuccess(m) => m,
+                    // Call handle_setup_connection or fail
+                    match DownstreamMiningNode::handle_message_common(
+                        node.clone(),
+                        message_type,
+                        payload,
+                        routing_logic,
+                    ) {
+                        Ok(SendToCommon::RelayNewMessageToRemote(_, message)) => {
+                            let message = match message {
+                            roles_logic_sv2::parsers::CommonMessages::SetupConnectionSuccess(m) => {
+                                m
+                            }
+                            _ => panic!(),
+                        };
+                            DownstreamMiningNode::start(node, message).await
+                        }
                         _ => panic!(),
-                    };
-                    DownstreamMiningNode::start(node, message).await
+                    }
+                });
+                    }
+                    Err(e) => error!("Failed to accept downstream connection. {:?}", e)
                 }
-                _ => panic!(),
             }
-        });
+            _ = &mut shutdown_rx => {
+                info!("Closing listener");
+                return;
+            }
+        }
     }
 }
 
