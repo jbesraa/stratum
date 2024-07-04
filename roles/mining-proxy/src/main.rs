@@ -23,7 +23,7 @@ mod lib;
 use lib::Config;
 use roles_logic_sv2::utils::{GroupId, Mutex};
 use std::{net::SocketAddr, sync::Arc};
-use tokio::sync::oneshot;
+use tokio::{net::TcpListener, sync::oneshot};
 use tracing::{error, info, warn};
 
 mod args {
@@ -121,6 +121,10 @@ async fn main() {
         }
     };
 
+    start_mining_proxy(config).await;
+}
+
+async fn start_mining_proxy(config: Config) {
     let group_id = Arc::new(Mutex::new(GroupId::new()));
     lib::ROUTING_LOGIC
         .set(Mutex::new(
@@ -129,7 +133,6 @@ async fn main() {
         .expect("BUG: Failed to set ROUTING_LOGIC");
     info!("PROXY INITIALIZING");
     lib::initialize_upstreams(config.min_supported_version, config.max_supported_version).await;
-    info!("PROXY INITIALIZED");
 
     // Wait for downstream connection
     let socket = SocketAddr::new(
@@ -137,14 +140,19 @@ async fn main() {
         config.listen_mining_port,
     );
 
-    info!("PROXY INITIALIZED");
 
-    let (shutdown_tx, shutdown_rx) = oneshot::channel();
+    let (shutdown_tx, mut shutdown_rx) = oneshot::channel();
+    let listener = TcpListener::bind(socket).await.unwrap();
+    info!("Listening on {}", socket.to_string());
 
     tokio::select! {
-        _ = lib::downstream_mining::listen_for_downstream_mining(socket, shutdown_rx) => {
+        _ = lib::downstream_mining::listen_for_downstream_mining(listener) => {
             warn!("Downstream mining listener exited prematurely");
         },
+        _ = &mut shutdown_rx => {
+            info!("Closing listener on {}", socket.to_string());
+            let _ = shutdown_tx.send(());
+        }
         _ = tokio::signal::ctrl_c() => {
             let _ = shutdown_tx.send(());
             info!("Interrupt received");
@@ -152,4 +160,11 @@ async fn main() {
     }
 
     info!("Shutdown done");
+
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn test_start_mining_proxy_success() { }
 }
