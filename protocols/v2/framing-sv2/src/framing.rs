@@ -92,10 +92,10 @@ impl<T: Serialize + GetSize, B: AsMut<[u8]> + AsRef<[u8]>> Sv2Frame<T, B> {
     }
 
     /// `Sv2Frame` always returns `Some(self.header)`.
-    pub fn get_header(&self) -> Option<crate::header::Header> {
+    pub fn header(&self) -> crate::header::Header {
         match self {
-            Sv2Frame::Raw { header, .. } => Some(*header),
-            Sv2Frame::Payload { header, .. } => Some(*header),
+            Sv2Frame::Raw { header, .. } => *header,
+            Sv2Frame::Payload { header, .. } => *header,
         }
     }
 
