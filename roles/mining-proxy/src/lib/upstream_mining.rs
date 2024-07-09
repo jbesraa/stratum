@@ -475,7 +475,6 @@ impl UpstreamMiningNode {
                         Channel::DowntreamHomUpstreamExtended { channel_id, .. } => {
                             Some(*channel_id)
                         }
-                        Channel::DowntreamNonHomUpstreamExtended { .. } => todo!(),
                     },
                 })
                 .unwrap()
