@@ -34,9 +34,7 @@ use roles_logic_sv2::{
     Error::NoUpstreamsConnected,
 };
 use std::{
-    net::SocketAddr,
     sync::{atomic::AtomicBool, Arc},
-    thread::sleep,
     time::Duration,
 };
 use tracing::{error, info, warn};
@@ -107,14 +105,13 @@ impl PartialEq for Upstream {
 }
 
 impl Upstream {
-    /// Instantiate a new `Upstream`.
-    /// Connect to the SV2 Upstream role (most typically a SV2 Pool). Initializes the
-    /// `UpstreamConnection` with a channel to send and receive messages from the SV2 Upstream
-    /// role and uses channels provided in the function arguments to send and receive messages
-    /// from the `Downstream`.
+    /// Instantiate a new `Upstream`.  Connect to the SV2 Upstream role (most typically a SV2
+    /// Pool). Initializes the `UpstreamConnection` with a channel to send and receive messages
+    /// from the SV2 Upstream role and uses channels provided in the function arguments to send and
+    /// receive messages from the `Downstream`.
     #[cfg_attr(feature = "cargo-clippy", allow(clippy::too_many_arguments))]
     pub async fn new(
-        address: SocketAddr,
+        upstream_connection: TcpStream,
         authority_public_key: Secp256k1PublicKey,
         rx_sv2_submit_shares_ext: Receiver<SubmitSharesExtended<'static>>,
         tx_sv2_set_new_prev_hash: Sender<SetNewPrevHash<'static>>,
@@ -126,20 +123,7 @@ impl Upstream {
         difficulty_config: Arc<Mutex<UpstreamDifficultyConfig>>,
     ) -> ProxyResult<'static, Arc<Mutex<Self>>> {
         // Connect to the SV2 Upstream role retry connection every 5 seconds.
-        let socket = loop {
-            match TcpStream::connect(address).await {
-                Ok(socket) => break socket,
-                Err(e) => {
-                    error!(
-                        "Failed to connect to Upstream role at {}, retrying in 5s: {}",
-                        address, e
-                    );
-
-                    sleep(Duration::from_secs(5));
-                }
-            }
-        };
-
+        let socket = upstream_connection;
         let pub_key: Secp256k1PublicKey = authority_public_key;
         let initiator = Initiator::from_raw_k(pub_key.into_bytes())?;
 
