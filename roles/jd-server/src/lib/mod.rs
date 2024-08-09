@@ -3,17 +3,26 @@ pub mod job_declarator;
 pub mod mempool;
 pub mod status;
 
+use async_channel::{bounded, unbounded, Receiver, Sender};
 use codec_sv2::{StandardEitherFrame, StandardSv2Frame};
+use error_handling::handle_result;
+use job_declarator::JobDeclarator;
 use key_utils::{Secp256k1PublicKey, Secp256k1SecretKey};
+use mempool::error::JdsMempoolError;
 use roles_logic_sv2::{
-    errors::Error, parsers::PoolMessages as JdsMessages, utils::CoinbaseOutput as CoinbaseOutput_,
+    errors::Error,
+    parsers::PoolMessages as JdsMessages,
+    utils::{CoinbaseOutput as CoinbaseOutput_, Mutex},
 };
 use serde::Deserialize;
 use std::{
     convert::{TryFrom, TryInto},
+    ops::Sub,
+    sync::Arc,
     time::Duration,
 };
 use stratum_common::bitcoin::{Script, TxOut};
+use tracing::warn;
 
 pub type Message = JdsMessages<'static>;
 pub type StdFrame = StandardSv2Frame<Message>;
@@ -33,6 +42,124 @@ pub fn get_coinbase_output(config: &Configuration) -> Result<Vec<TxOut>, Error> 
         true => Err(Error::EmptyCoinbaseOutputs),
         _ => Ok(result),
     }
+}
+
+pub fn start_jd_server(config: Configuration) -> Receiver<status::Status> {
+    let url = config.core_rpc_url.clone() + ":" + &config.core_rpc_port.clone().to_string();
+    let username = config.core_rpc_user.clone();
+    let password = config.core_rpc_pass.clone();
+    // TODO should we manage what to do when the limit is reaced?
+    let (new_block_sender, new_block_receiver): (Sender<String>, Receiver<String>) = bounded(10);
+    let mempool = Arc::new(Mutex::new(mempool::JDsMempool::new(
+        url.clone(),
+        username,
+        password,
+        new_block_receiver,
+    )));
+    let mempool_update_interval = config.mempool_update_interval;
+    let (status_tx, status_rx) = unbounded();
+    let sender = status::Sender::Downstream(status_tx.clone());
+    let mut last_empty_mempool_warning =
+        std::time::Instant::now().sub(std::time::Duration::from_secs(60));
+    let mempool_cloned_ = mempool.clone();
+    if url.contains("http") {
+        let sender_update_mempool = sender.clone();
+        tokio::task::spawn(async move {
+            loop {
+                let update_mempool_result: Result<(), mempool::error::JdsMempoolError> =
+                    mempool::JDsMempool::update_mempool(mempool_cloned_.clone()).await;
+                if let Err(err) = update_mempool_result {
+                    match err {
+                        JdsMempoolError::EmptyMempool => {
+                            if last_empty_mempool_warning.elapsed().as_secs() >= 60 {
+                                warn!("{:?}", err);
+                                warn!("Template Provider is running, but its mempool is empty (possible reasons: you're testing in testnet, signet, or regtest)");
+                                last_empty_mempool_warning = std::time::Instant::now();
+                            }
+                        }
+                        JdsMempoolError::NoClient => {
+                            mempool::error::handle_error(&err);
+                            handle_result!(sender_update_mempool, Err(err));
+                        }
+                        JdsMempoolError::Rpc(_) => {
+                            mempool::error::handle_error(&err);
+                            handle_result!(sender_update_mempool, Err(err));
+                        }
+                        JdsMempoolError::PoisonLock(_) => {
+                            mempool::error::handle_error(&err);
+                            handle_result!(sender_update_mempool, Err(err));
+                        }
+                    }
+                }
+                tokio::time::sleep(mempool_update_interval).await;
+                // DO NOT REMOVE THIS LINE
+                //let _transactions = mempool::JDsMempool::_get_transaction_list(mempool_cloned_.clone());
+            }
+        });
+
+        let mempool_cloned = mempool.clone();
+
+        let sender_submit_solution = sender.clone();
+        tokio::task::spawn(async move {
+            loop {
+                let result = mempool::JDsMempool::on_submit(mempool_cloned.clone()).await;
+                if let Err(err) = result {
+                    match err {
+                        JdsMempoolError::EmptyMempool => {
+                            if last_empty_mempool_warning.elapsed().as_secs() >= 60 {
+                                warn!("{:?}", err);
+                                warn!("Template Provider is running, but its mempool is empty (possible reasons: you're testing in testnet, signet, or regtest)");
+                                last_empty_mempool_warning = std::time::Instant::now();
+                            }
+                        }
+                        _ => {
+                            // TODO here there should be a better error managmenet
+                            mempool::error::handle_error(&err);
+                            handle_result!(sender_submit_solution, Err(err));
+                        }
+                    }
+                }
+            }
+        });
+    }
+    // info!("Jds INITIALIZING with config: {:?}", &args.config_path);
+
+    let cloned = config.clone();
+    let mempool_cloned = mempool.clone();
+    let (sender_add_txs_to_mempool, receiver_add_txs_to_mempool) = unbounded();
+    tokio::task::spawn(async move {
+        JobDeclarator::start(
+            cloned,
+            sender,
+            mempool_cloned,
+            new_block_sender,
+            sender_add_txs_to_mempool,
+        )
+        .await
+    });
+    tokio::task::spawn(async move {
+        loop {
+            if let Ok(add_transactions_to_mempool) = receiver_add_txs_to_mempool.recv().await {
+                let mempool_cloned = mempool.clone();
+                tokio::task::spawn(async move {
+                    match mempool::JDsMempool::add_tx_data_to_mempool(
+                        mempool_cloned,
+                        add_transactions_to_mempool,
+                    )
+                    .await
+                    {
+                        Ok(_) => (),
+                        Err(err) => {
+                            // TODO
+                            // here there should be a better error management
+                            mempool::error::handle_error(&err);
+                        }
+                    }
+                });
+            }
+        }
+    });
+    status_rx
 }
 
 impl TryFrom<&CoinbaseOutput> for CoinbaseOutput_ {
@@ -55,6 +182,15 @@ pub struct CoinbaseOutput {
     output_script_value: String,
 }
 
+impl CoinbaseOutput {
+    pub fn new(output_script_type: String, output_script_value: String) -> Self {
+        Self {
+            output_script_type,
+            output_script_value,
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, Clone)]
 pub struct Configuration {
     #[serde(default = "default_true")]
@@ -72,6 +208,34 @@ pub struct Configuration {
     pub mempool_update_interval: Duration,
 }
 
+impl Configuration {
+    pub fn new(
+        listen_jd_address: String,
+        authority_public_key: Secp256k1PublicKey,
+        authority_secret_key: Secp256k1SecretKey,
+        cert_validity_sec: u64,
+        coinbase_outputs: Vec<CoinbaseOutput>,
+        core_rpc_url: String,
+        core_rpc_port: u16,
+        core_rpc_user: String,
+        core_rpc_pass: String,
+        mempool_update_interval: Duration,
+    ) -> Self {
+        Self {
+            async_mining_allowed: false,
+            listen_jd_address,
+            authority_public_key,
+            authority_secret_key,
+            cert_validity_sec,
+            coinbase_outputs,
+            core_rpc_url,
+            core_rpc_port,
+            core_rpc_user,
+            core_rpc_pass,
+            mempool_update_interval,
+        }
+    }
+}
 fn default_true() -> bool {
     true
 }
