@@ -24,7 +24,7 @@ const ADDR: &str = "127.0.0.1:34255";
 /// Represents the Mining Device client which is connected to a Upstream node (either a SV1 Pool
 /// server or a SV1 <-> SV2 Translator Proxy server).
 #[derive(Debug, Clone)]
-pub(crate) struct Client {
+pub struct Client {
     client_id: u32,
     extranonce1: Option<Extranonce<'static>>,
     extranonce2_size: Option<usize>,

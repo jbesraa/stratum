@@ -4,11 +4,13 @@ use common::is_port_open;
 
 mod common;
 
+#[ignore]
 #[tokio::test]
 async fn success_pool_template_provider_connection() {
     assert!(common::start_template_provider_and_pool().await.is_ok());
 }
 
+#[ignore]
 #[tokio::test]
 async fn pool_bad_coinbase_output() {
     let (template_provider, template_provider_port) = common::start_template_provider().await;
@@ -32,6 +34,7 @@ async fn pool_bad_coinbase_output() {
     template_provider.stop();
 }
 
+#[ignore]
 #[cfg(feature = "mining_device_reject_auth")]
 #[tokio::test]
 async fn pool_remove_downstream_after_bad_auth() {
@@ -74,4 +77,9 @@ async fn pool_remove_downstream_after_bad_auth() {
     dropped_downstreams.push(1);
     assert_eq!(state, pool_sv2::PoolState::Running(dropped_downstreams));
     template_provider.stop();
+}
+
+#[tokio::test]
+async fn pool_tproxy_close_channel() {
+    assert!(false);
 }

@@ -297,3 +297,24 @@ impl TestMiningDevice {
             .map_err(|e| e.into())
     }
 }
+
+pub struct TestSV1MiningDevice;
+
+impl TestSV1MiningDevice {
+		pub async fn start() -> Result<(), pool_sv2::error::PoolError> {}
+}
+
+struct TestTranslator;
+
+impl TestTranslator {
+    pub async fn start() {
+	  let upstream_config = translator_sv2::proxy_config::UpstreamConfig::new(address, port, authority_pubkey, difficulty_config); // pool or jdc
+	  let downstream_config = translator_sv2::proxy_config::DownstreamConfig::new(address, port, difficulty_config); // mining-device
+	  let max_supported_version = 0;
+	  let min_supported_version = 0;
+	  let min_extranonce2_size = 0;
+	  let config: translator_sv2::proxy_config::ProxyConfig =
+		translator_sv2::proxy_config::ProxyConfig::new();
+	  translator_sv2::TranslatorSv2::new(config).await
+    }
+}

@@ -1361,6 +1361,7 @@ dependencies = [
  "pool_sv2",
  "tar",
  "tokio",
+ "translator_sv2",
 ]
 
 [[package]]
