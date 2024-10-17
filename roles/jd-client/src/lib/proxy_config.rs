@@ -10,6 +10,15 @@ pub struct CoinbaseOutput {
     output_script_value: String,
 }
 
+impl CoinbaseOutput {
+    pub fn new(output_script_type: String, output_script_value: String) -> Self {
+        Self {
+            output_script_type,
+            output_script_value,
+        }
+    }
+}
+
 impl TryFrom<&CoinbaseOutput> for CoinbaseOutput_ {
     type Error = Error;
 
@@ -46,12 +55,69 @@ pub struct ProxyConfig {
     pub test_only_do_not_send_solution_to_tp: Option<bool>,
 }
 
+impl ProxyConfig {
+    #[allow(dead_code)]
+    pub fn new(
+        downstream_address: String,
+        downstream_port: u16,
+        max_supported_version: u16,
+        min_supported_version: u16,
+        min_extranonce2_size: u16,
+        withhold: bool,
+        authority_public_key: Secp256k1PublicKey,
+        authority_secret_key: Secp256k1SecretKey,
+        cert_validity_sec: u64,
+        tp_address: String,
+        tp_authority_public_key: Option<Secp256k1PublicKey>,
+        retry: u32,
+        upstreams: Vec<Upstream>,
+        timeout: Duration,
+        coinbase_outputs: Vec<CoinbaseOutput>,
+        test_only_do_not_send_solution_to_tp: Option<bool>,
+    ) -> Self {
+        Self {
+            downstream_address,
+            downstream_port,
+            max_supported_version,
+            min_supported_version,
+            min_extranonce2_size,
+            withhold,
+            authority_public_key,
+            authority_secret_key,
+            cert_validity_sec,
+            tp_address,
+            tp_authority_public_key,
+            retry,
+            upstreams,
+            timeout,
+            coinbase_outputs,
+            test_only_do_not_send_solution_to_tp,
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, Clone)]
 pub struct Upstream {
     pub authority_pubkey: Secp256k1PublicKey,
     pub pool_address: String,
     pub jd_address: String,
     pub pool_signature: String, // string be included in coinbase tx input scriptsig
+}
+
+impl Upstream {
+    pub fn new(
+        authority_pubkey: Secp256k1PublicKey,
+        pool_address: String,
+        jd_address: String,
+        pool_signature: String,
+    ) -> Self {
+        Self {
+            authority_pubkey,
+            pool_address,
+            jd_address,
+            pool_signature,
+        }
+    }
 }
 
 fn duration_from_toml<'de, D>(deserializer: D) -> Result<Duration, D::Error>
