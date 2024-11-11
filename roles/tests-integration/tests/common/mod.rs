@@ -282,3 +282,99 @@ pub async fn start_template_provider(tp_port: u16) -> TemplateProvider {
     template_provider.generate_blocks(16);
     template_provider
 }
+
+pub async fn start_jdc(pool_address: SocketAddr, tp_address: SocketAddr, jds_address: SocketAddr) {
+    use jd_client::proxy_config::{CoinbaseOutput, ProxyConfig, Upstream};
+    let jdc_address = get_available_address();
+    let downstream_address = jdc_address.ip().to_string();
+    let downstream_port = jdc_address.port();
+    let max_supported_version = 2;
+    let min_supported_version = 2;
+    let min_extranonce2_size = 8;
+    let withhold = false;
+    let authority_public_key = Secp256k1PublicKey::try_from(
+        "9auqWEzQDVyd2oe1JVGFLMLHZtCo2FFqZwtKA5gd9xbuEu7PH72".to_string(),
+    )
+    .unwrap();
+    let authority_secret_key = Secp256k1SecretKey::try_from(
+        "mkDLTBBRxdBv998612qipDYoTK3YUrqLe8uWw7gu3iXbSrn2n".to_string(),
+    )
+    .unwrap();
+    let cert_validity_sec = 3600;
+    let retry = 10;
+    let coinbase_outputs = vec![CoinbaseOutput::new(
+        "P2WPKH".to_string(),
+        "036adc3bdf21e6f9a0f0fb0066bf517e5b7909ed1563d6958a10993849a7554075".to_string(),
+    )];
+    let authority_pubkey = Secp256k1PublicKey::try_from(
+        "9auqWEzQDVyd2oe1JVGFLMLHZtCo2FFqZwtKA5gd9xbuEu7PH72".to_string(),
+    )
+    .unwrap();
+    let pool_signature = "Stratum v2 SRI Pool".to_string();
+    let upstreams = vec![Upstream::new(
+        authority_pubkey,
+        pool_address.to_string(),
+        jds_address.to_string(),
+        pool_signature,
+    )];
+    let jd_client_proxy = ProxyConfig::new(
+        downstream_address,
+        downstream_port,
+        max_supported_version,
+        min_supported_version,
+        min_extranonce2_size,
+        withhold,
+        authority_public_key,
+        authority_secret_key,
+        cert_validity_sec,
+        tp_address.to_string(),
+        None,
+        retry,
+        upstreams,
+        std::time::Duration::from_secs(1),
+        coinbase_outputs,
+        None,
+    );
+    let ret = jd_client::JobDeclaratorClient::new(jd_client_proxy);
+    tokio::spawn(async move { ret.start().await });
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+}
+
+pub async fn start_jds(tp_address: SocketAddr) -> String {
+    use jd_server::JobDeclaratorServer;
+    use jd_server::{CoinbaseOutput, Configuration, CoreRpc};
+    let authority_public_key = Secp256k1PublicKey::try_from(
+        "9auqWEzQDVyd2oe1JVGFLMLHZtCo2FFqZwtKA5gd9xbuEu7PH72".to_string(),
+    )
+    .unwrap();
+    let authority_secret_key = Secp256k1SecretKey::try_from(
+        "mkDLTBBRxdBv998612qipDYoTK3YUrqLe8uWw7gu3iXbSrn2n".to_string(),
+    )
+    .unwrap();
+    let listen_jd_address = get_available_address().to_string();
+    let cert_validity_sec = 3600;
+    let coinbase_outputs = vec![CoinbaseOutput::new(
+        "P2WPKH".to_string(),
+        "036adc3bdf21e6f9a0f0fb0066bf517e5b7909ed1563d6958a10993849a7554075".to_string(),
+    )];
+    let core_rpc = CoreRpc::new(
+        tp_address.ip().to_string(),
+        tp_address.port(),
+        "tp_username".to_string(),
+        "tp_password".to_string(),
+    );
+    let config = Configuration::new(
+        listen_jd_address.clone(),
+        authority_public_key,
+        authority_secret_key,
+        cert_validity_sec,
+        coinbase_outputs,
+        core_rpc,
+        std::time::Duration::from_secs(1),
+    );
+    tokio::spawn(async move {
+        JobDeclaratorServer::new(config).start().await;
+    });
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    listen_jd_address
+}
