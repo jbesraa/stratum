@@ -1304,6 +1304,7 @@ dependencies = [
  "const_sv2",
  "flate2",
  "key-utils",
+ "mining_proxy_sv2",
  "minreq",
  "network_helpers_sv2",
  "once_cell",
