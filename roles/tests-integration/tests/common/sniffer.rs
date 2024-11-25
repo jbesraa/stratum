@@ -1,6 +1,7 @@
 use async_channel::{Receiver, Sender};
-use codec_sv2::{
-    framing_sv2::framing::Frame, HandshakeRole, Initiator, Responder, StandardEitherFrame, Sv2Frame,
+use codec_sv2::{Frame, HandshakeRole, Initiator, Responder, StandardEitherFrame, Sv2Frame};
+use futures::{
+    future::FutureExt, // for `.fuse()`
 };
 use key_utils::{Secp256k1PublicKey, Secp256k1SecretKey};
 use network_helpers_sv2::noise_connection_tokio::Connection;
@@ -123,7 +124,7 @@ impl Sniffer {
     ///
     /// The sniffer should be started after the upstream role have been initialized and is ready to
     /// accept messages and before the downstream role starts sending messages.
-    pub async fn start(self) {
+    pub async fn start(self, mut manual_drop: Receiver<()>) {
         let (downstream_receiver, downstream_sender) =
             Self::create_downstream(Self::wait_for_client(self.listening_address).await)
                 .await
@@ -138,9 +139,9 @@ impl Sniffer {
         let downstream_messages = self.messages_from_downstream.clone();
         let upstream_messages = self.messages_from_upstream.clone();
         let intercept_messages = self.intercept_messages.clone();
-        let _ = select! {
-            r = Self::recv_from_down_send_to_up(downstream_receiver, upstream_sender, downstream_messages, intercept_messages.clone()) => r,
-            r = Self::recv_from_up_send_to_down(upstream_receiver, downstream_sender, upstream_messages, intercept_messages) => r,
+        select! {
+            _r = Self::recv_from_down_send_to_up(downstream_receiver, upstream_sender, downstream_messages, intercept_messages.clone()) => {},
+            _r = Self::recv_from_up_send_to_down(upstream_receiver, downstream_sender, upstream_messages, intercept_messages) => {},
         };
         // wait a bit so we dont drop the sniffer before the test has finished
         sleep(std::time::Duration::from_secs(1)).await;
@@ -166,6 +167,21 @@ impl Sniffer {
     /// - specific message fields
     pub fn next_message_from_upstream(&self) -> Option<(MsgType, AnyMessage<'static>)> {
         self.messages_from_upstream.next_message()
+    }
+
+    pub fn sent_by_upstream(&self, msg_type: MsgType) -> bool {
+        self.messages_from_upstream
+            .messages
+            .safe_lock(|messages| messages.iter().any(|(t, _)| *t == msg_type))
+            .unwrap()
+    }
+
+    pub fn list_all_messages(&self) {
+        dbg!(
+            "Messages from downstream: {}",
+            &self.messages_from_downstream
+        );
+        dbg!("Messages from upstream: {}", &self.messages_from_upstream);
     }
 
     async fn create_downstream(

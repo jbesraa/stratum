@@ -68,7 +68,13 @@ impl Client {
     ///    and then serialized into a json message that is sent to the Upstream via
     ///    `sender_outgoing`.
     pub async fn connect(client_id: u32, upstream_addr: SocketAddr) {
-        let stream = std::sync::Arc::new(TcpStream::connect(upstream_addr).await.unwrap());
+        let stream = match TcpStream::connect(upstream_addr).await {
+            Ok(c) => std::sync::Arc::new(c),
+            Err(e) => {
+                println!("Error connecting to upstream: {:?}", e);
+                return;
+            }
+        };
         let (reader, writer) = (stream.clone(), stream);
 
         // `sender_incoming` listens on socket for incoming messages from the Upstream and sends
@@ -112,7 +118,7 @@ impl Client {
         task::spawn(async move {
             loop {
                 let message: String = receiver_outgoing.recv().await.unwrap();
-                (&*writer).write_all(message.as_bytes()).await.unwrap();
+                let _ = (&*writer).write_all(message.as_bytes()).await;
             }
         });
 
@@ -155,13 +161,9 @@ impl Client {
                 // Sends relevant candidate block header values needed to construct a
                 // `mining.submit` message to the `receiver_share` in the task that is responsible
                 // for sending messages to the Upstream node.
-                sender_share
-                    .try_send((nonce, job_id.unwrap(), version.unwrap(), time))
-                    .unwrap();
+                let _ = sender_share.try_send((nonce, job_id.unwrap(), version.unwrap(), time));
             }
-            miner_cloned
-                .safe_lock(|m| m.header.as_mut().map(|h| h.nonce += 1))
-                .unwrap();
+            let _ = miner_cloned.safe_lock(|m| m.header.as_mut().map(|h| h.nonce += 1));
         });
 
         // Task to receive relevant candidate block header values needed to construct a
@@ -190,7 +192,7 @@ impl Client {
                 };
                 let message: json_rpc::Message = submit.into();
                 let message = format!("{}\n", serde_json::to_string(&message).unwrap());
-                sender_outgoing_clone.send(message).await.unwrap();
+                let _ = sender_outgoing_clone.send(message).await;
             }
         });
         let recv_incoming = client.safe_lock(|c| c.receiver_incoming.clone()).unwrap();
@@ -211,8 +213,12 @@ impl Client {
         // Waits for the `sender_incoming` to get message line from socket to be parsed by the
         // `Client`
         loop {
-            let incoming = recv_incoming.recv().await.unwrap();
-            Self::parse_message(client.clone(), Ok(incoming)).await;
+            match recv_incoming.recv().await {
+                Ok(incoming) => {
+                    Self::parse_message(client.clone(), Ok(incoming)).await;
+                },
+                Err(_) => { }
+            }
         }
     }
 
@@ -223,11 +229,11 @@ impl Client {
     ) {
         // If we have a line (1 line represents 1 sv1 incoming message), then handle that message
         if let Ok(line) = incoming_message {
-            println!(
-                "CLIENT {} - Received: {}",
-                self_.safe_lock(|s| s.client_id).unwrap(),
-                line
-            );
+            // println!(
+            //     "CLIENT {} - Received: {}",
+            //     self_.safe_lock(|s| s.client_id).unwrap(),
+            //     line
+            // );
             let message: json_rpc::Message = serde_json::from_str(&line).unwrap();
             // If has a message, it sends it back
             if let Some(m) = self_
@@ -243,7 +249,7 @@ impl Client {
     /// Send SV1 messages to the receiver_outgoing which writes to the socket (aka Upstream node)
     async fn send_message(sender: Sender<String>, msg: json_rpc::Message) {
         let msg = format!("{}\n", serde_json::to_string(&msg).unwrap());
-        println!(" - Send: {}", &msg);
+        // println!(" - Send: {}", &msg);
         sender.send(msg).await.unwrap();
     }
 

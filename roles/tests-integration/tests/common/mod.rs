@@ -146,7 +146,7 @@ impl TemplateProvider {
     }
 
     fn stop(&self) {
-        let _ = self.bitcoind.client.stop().unwrap();
+        let _ = self.bitcoind.client.stop();
     }
 
     fn generate_blocks(&self, n: u64) {
@@ -201,7 +201,7 @@ pub async fn start_sniffer(
     upstream: SocketAddr,
     check_on_drop: bool,
     intercept_message: Option<Vec<InterceptMessage>>,
-) -> Sniffer {
+) -> (Sniffer, async_channel::Sender<()>) {
     let sniffer = Sniffer::new(
         identifier,
         listening_address,
@@ -211,10 +211,11 @@ pub async fn start_sniffer(
     )
     .await;
     let sniffer_clone = sniffer.clone();
+    let (tx1, rx1) = async_channel::bounded(1);
     tokio::spawn(async move {
-        sniffer_clone.start().await;
+        sniffer_clone.start(rx1).await;
     });
-    sniffer
+    (sniffer, tx1)
 }
 
 #[derive(Debug)]
@@ -295,6 +296,7 @@ pub async fn start_pool(
 pub async fn start_template_provider(tp_port: u16) -> TemplateProvider {
     let template_provider = TemplateProvider::start(tp_port);
     template_provider.generate_blocks(16);
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
     template_provider
 }
 
@@ -319,7 +321,6 @@ pub async fn start_jdc(
         "mkDLTBBRxdBv998612qipDYoTK3YUrqLe8uWw7gu3iXbSrn2n".to_string(),
     )
     .unwrap();
-    let cert_validity_sec = 3600;
     let coinbase_outputs = vec![CoinbaseOutput::new(
         "P2WPKH".to_string(),
         "036adc3bdf21e6f9a0f0fb0066bf517e5b7909ed1563d6958a10993849a7554075".to_string(),
@@ -329,14 +330,17 @@ pub async fn start_jdc(
     )
     .unwrap();
     let pool_signature = "Stratum v2 SRI Pool".to_string();
-    let upstreams = pool_address.into_iter().map(|addr| {
-        Upstream::new(
-            authority_pubkey,
-            addr.to_string(),
-            jds_address.to_string(),
-            pool_signature.clone(),
-        )
-    }).collect();
+    let upstreams = pool_address
+        .into_iter()
+        .map(|addr| {
+            Upstream::new(
+                authority_pubkey,
+                addr.to_string(),
+                jds_address.to_string(),
+                pool_signature.clone(),
+            )
+        })
+        .collect();
     let pool_config = PoolConfig::new(authority_public_key, authority_secret_key);
     let tp_config = TPConfig::new(1000, tp_address.to_string(), None);
     let protocol_config = ProtocolConfig::new(
@@ -352,7 +356,7 @@ pub async fn start_jdc(
         pool_config,
         tp_config,
         upstreams,
-        std::time::Duration::from_secs(cert_validity_sec),
+        std::time::Duration::from_secs(0),
     );
     let ret = jd_client::JobDeclaratorClient::new(jd_client_proxy);
     tokio::spawn(async move { ret.start().await });
@@ -407,7 +411,7 @@ pub async fn start_sv2_translator(upstream: SocketAddr) -> SocketAddr {
     .expect("failed");
     let listening_address = get_available_address();
     let listening_port = listening_address.port();
-    let hashrate = measure_hashrate(3) as f32 / 100.0;
+    let hashrate = measure_hashrate(3) as f32 / 50.0;
     let min_individual_miner_hashrate = hashrate;
     let shares_per_minute = 60.0;
     let channel_diff_update_interval = 60;

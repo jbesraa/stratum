@@ -79,6 +79,7 @@ impl JobDeclaratorClient {
             let task_collector = task_collector.clone();
             let tx_status = tx_status.clone();
             if let Some(upstream) = proxy_config.upstreams.get(upstream_index) {
+                dbg!(&upstream);
                 self.initialize_jd(tx_status.clone(), task_collector.clone(), upstream.clone())
                     .await;
             } else {
@@ -133,8 +134,8 @@ impl JobDeclaratorClient {
                         break;
                     }
                     status::State::UpstreamRogue => {
-                        error!("Changin Pool");
-                        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                        dbg!("Changin Pool");
+                        // tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                         task_collector
                             .safe_lock(|s| {
                                 for handle in s {
@@ -143,7 +144,7 @@ impl JobDeclaratorClient {
                             })
                             .unwrap();
                         upstream_index += 1;
-                        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                        // tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                         break;
                     }
                     status::State::Healthy(msg) => {
@@ -270,7 +271,7 @@ impl JobDeclaratorClient {
         {
             Ok(_) => info!("Connected to Upstream!"),
             Err(e) => {
-                error!("Failed to connect to Upstream EXITING! : {}", e);
+                dbg!("Failed to connect to Upstream EXITING! : {}", e);
                 panic!()
             }
         }
@@ -345,6 +346,7 @@ impl JobDeclaratorClient {
             test_only_do_not_send_solution_to_tp,
         )
         .await;
+        dbg!("started jdc");
     }
 }
 

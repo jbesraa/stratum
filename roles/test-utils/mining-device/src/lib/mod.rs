@@ -592,10 +592,10 @@ impl Miner {
             hash.reverse();
             let hash = Uint256::from_be_bytes(hash);
             if hash < *self.target.as_ref().unwrap() {
-                info!(
-                    "Found share with nonce: {}, for target: {:?}, with hash: {:?}",
-                    header.nonce, self.target, hash,
-                );
+                // info!(
+                //     "Found share with nonce: {}, for target: {:?}, with hash: {:?}",
+                //     header.nonce, self.target, hash,
+                // );
                 NextShareOutcome::ValidShare
             } else {
                 NextShareOutcome::InvalidShare
