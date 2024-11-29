@@ -2,7 +2,7 @@ mod common;
 
 use std::convert::TryInto;
 
-use common::{InterceptMessage, MessageDirection};
+use common::{InterceptMessage, InterceptMessages, MessageDirection};
 use const_sv2::MESSAGE_TYPE_SETUP_CONNECTION_ERROR;
 use roles_logic_sv2::{
     common_messages_sv2::{Protocol, SetupConnection, SetupConnectionError},
@@ -82,12 +82,14 @@ async fn test_sniffer_interrupter() {
         MESSAGE_TYPE_SETUP_CONNECTION_ERROR,
         true,
     );
+    let mut intercept_messages = InterceptMessages::new();
+    intercept_messages.add(interrupt_msgs);
     let sniffer = common::start_sniffer(
         "1".to_string(),
         sniffer_addr,
         tp_addr,
         false,
-        Some(vec![interrupt_msgs]),
+        Some(intercept_messages),
     )
     .await;
     let _ = common::start_pool(Some(pool_addr), Some(sniffer_addr)).await;

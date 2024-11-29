@@ -18,7 +18,7 @@ use roles_logic_sv2::{
     },
     utils::Mutex,
 };
-use std::{collections::VecDeque, convert::TryInto, net::SocketAddr, sync::Arc};
+use std::{collections::VecDeque, convert::TryInto, net::SocketAddr, ops::Deref, sync::Arc};
 use tokio::{
     net::{TcpListener, TcpStream},
     select,
@@ -62,8 +62,11 @@ pub struct Sniffer {
     messages_from_downstream: MessagesAggregator,
     messages_from_upstream: MessagesAggregator,
     check_on_drop: bool,
-    intercept_messages: Vec<InterceptMessage>,
+    intercept_messages: InterceptMessages,
 }
+
+#[derive(Debug, Clone, Default)]
+pub struct InterceptMessages(Vec<InterceptMessage>);
 
 #[derive(Debug, Clone)]
 pub struct InterceptMessage {
@@ -90,6 +93,40 @@ impl InterceptMessage {
             break_on,
         }
     }
+
+    pub fn is_message_type(&self, msg_type: MsgType) -> bool {
+        self.expected_message_type == msg_type
+    }
+}
+
+impl Iterator for InterceptMessages {
+    type Item = InterceptMessage;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.0.pop()
+    }
+}
+
+impl Deref for InterceptMessages {
+    type Target = Vec<InterceptMessage>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl InterceptMessages {
+    pub fn new() -> Self {
+        Self(Vec::new())
+    }
+    pub fn add(&mut self, intercept_message: InterceptMessage) {
+        let msg = intercept_message.clone();
+        self.0.push(msg);
+    }
+    pub fn is_message_type(&self, msg_type: MsgType) -> bool {
+        self.iter()
+            .any(|intercept_message| intercept_message.is_message_type(msg_type))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -106,7 +143,7 @@ impl Sniffer {
         listening_address: SocketAddr,
         upstream_address: SocketAddr,
         check_on_drop: bool,
-        intercept_messages: Option<Vec<InterceptMessage>>,
+        intercept_messages: Option<InterceptMessages>,
     ) -> Self {
         Self {
             identifier,
@@ -218,7 +255,7 @@ impl Sniffer {
         recv: Receiver<MessageFrame>,
         send: Sender<MessageFrame>,
         downstream_messages: MessagesAggregator,
-        intercept_messages: Vec<InterceptMessage>,
+        intercept_messages: InterceptMessages,
     ) -> Result<(), SnifferError> {
         while let Ok(mut frame) = recv.recv().await {
             let (msg_type, msg) = Self::message_from_frame(&mut frame);
@@ -260,39 +297,80 @@ impl Sniffer {
         recv: Receiver<MessageFrame>,
         send: Sender<MessageFrame>,
         upstream_messages: MessagesAggregator,
-        intercept_messages: Vec<InterceptMessage>,
+        intercept_messages: InterceptMessages,
     ) -> Result<(), SnifferError> {
         while let Ok(mut frame) = recv.recv().await {
             let (msg_type, msg) = Self::message_from_frame(&mut frame);
-            for intercept_message in intercept_messages.iter() {
-                if intercept_message.direction == MessageDirection::ToDownstream
-                    && intercept_message.expected_message_type == msg_type
-                {
-                    let extension_type = 0;
-                    let channel_msg = false;
-                    let frame = StandardEitherFrame::<AnyMessage<'_>>::Sv2(
-                        Sv2Frame::from_message(
-                            intercept_message.response_message.clone(),
-                            intercept_message.response_message_type,
-                            extension_type,
-                            channel_msg,
-                        )
-                        .expect("Failed to create the frame"),
-                    );
-                    upstream_messages
-                        .add_message(msg_type, intercept_message.response_message.clone());
-                    let _ = send.send(frame).await;
-                    if intercept_message.break_on {
-                        return Err(SnifferError::MessageInterrupted);
-                    } else {
-                        continue;
+            if intercept_messages.is_empty() {
+                if send.send(frame).await.is_err() {
+                    return Err(SnifferError::DownstreamClosed);
+                };
+                upstream_messages.add_message(msg_type, msg);
+            } else {
+                for intercept_message in intercept_messages.iter() {
+                    if intercept_message.direction == MessageDirection::ToDownstream
+                        && intercept_message.expected_message_type == msg_type
+                    {
+                        match (msg.clone(), intercept_message.response_message.clone()) {
+                            (
+                                AnyMessage::TemplateDistribution(
+                                    TemplateDistribution::SetNewPrevHash(mut og_msg),
+                                ),
+                                AnyMessage::TemplateDistribution(
+                                    TemplateDistribution::SetNewPrevHash(expected_msg),
+                                ),
+                            ) => {
+                                og_msg.header_timestamp = expected_msg.header_timestamp;
+                                upstream_messages.add_message(
+                                    msg_type,
+                                    intercept_message.response_message.clone(),
+                                );
+                                let frame = AnyMessage::TemplateDistribution(
+                                    TemplateDistribution::SetNewPrevHash(og_msg),
+                                );
+                                let frame = StandardEitherFrame::<AnyMessage<'_>>::Sv2(
+                                    Sv2Frame::from_message(
+                                        frame,
+                                        intercept_message.response_message_type,
+                                        0,
+                                        false,
+                                    )
+                                    .expect("Failed to create the frame"),
+                                );
+                                let _ = send.send(frame).await;
+                                if intercept_message.break_on {
+                                    return Err(SnifferError::MessageInterrupted);
+                                } else {
+                                    continue;
+                                }
+                            }
+                            _ => {
+                                let extension_type = 0;
+                                let channel_msg = false;
+                                let frame = StandardEitherFrame::<AnyMessage<'_>>::Sv2(
+                                    Sv2Frame::from_message(
+                                        intercept_message.response_message.clone(),
+                                        intercept_message.response_message_type,
+                                        extension_type,
+                                        channel_msg,
+                                    )
+                                    .expect("Failed to create the frame"),
+                                );
+                                upstream_messages.add_message(
+                                    msg_type,
+                                    intercept_message.response_message.clone(),
+                                );
+                                let _ = send.send(frame).await;
+                                if intercept_message.break_on {
+                                    return Err(SnifferError::MessageInterrupted);
+                                } else {
+                                    continue;
+                                }
+                            }
+                        }
                     }
                 }
             }
-            if send.send(frame).await.is_err() {
-                return Err(SnifferError::DownstreamClosed);
-            };
-            upstream_messages.add_message(msg_type, msg);
         }
         Err(SnifferError::UpstreamClosed)
     }
