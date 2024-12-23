@@ -417,4 +417,25 @@ mod tests {
         let result: Result<CoinbaseOutput_, _> = (&input).try_into();
         assert!(matches!(result, Err(Error::UnknownOutputScriptType)));
     }
+
+    #[tokio::test]
+    async fn test_async_allowed_config() {
+        let mut config = load_config("config-examples/jds-config-hosted-example.toml");
+        config.async_mining_allowed = true;
+        let address = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap()
+            .local_addr()
+            .unwrap();
+        config.listen_jd_address = address.to_string();
+        let jds = JobDeclaratorServer::new(config);
+        tokio::spawn(async move {
+            jds.start().await;
+        });
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        let err = tokio::net::TcpListener::bind(address).await;
+        let err = err.unwrap_err().raw_os_error().unwrap();
+        // OS error code 48 means "Address already in use"
+        assert_eq!(err, 48);
+    }
 }
