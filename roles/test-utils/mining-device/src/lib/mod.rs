@@ -14,7 +14,7 @@ use std::{
 use tokio::net::TcpStream;
 
 use async_channel::{Receiver, Sender};
-use binary_sv2::u256_from_int;
+use binary_sv2::{u256_from_int, B032};
 use codec_sv2::{Initiator, StandardEitherFrame, StandardSv2Frame};
 use rand::{thread_rng, Rng};
 use roles_logic_sv2::{
@@ -202,6 +202,8 @@ pub struct Device {
     prev_hash: Option<SetNewPrevHash<'static>>,
     sequence_numbers: Id,
     notify_changes_to_mining_thread: NewWorkNotifier,
+    extranonce_prefix: Option<Vec<u8>>,
+    extranonce_size: Option<u16>,
 }
 
 fn open_channel(
@@ -221,6 +223,31 @@ fn open_channel(
 
     info!("MINING DEVICE: send open channel with request id {}", id);
     OpenStandardMiningChannel {
+        request_id: id.into(),
+        user_identity,
+        nominal_hash_rate,
+        max_target: u256_from_int(567_u64),
+    }
+}
+
+fn open_extended_mining_channel(
+    device_id: Option<String>,
+    nominal_hashrate_multiplier: Option<f32>,
+    handicap: u32,
+) -> OpenExtendedMiningChannel<'static> {
+    let user_identity = device_id.unwrap_or_default().try_into().unwrap();
+    let id: u32 = 10;
+    info!("Measuring CPU hashrate");
+    let measured_hashrate = measure_hashrate(5, handicap) as f32;
+    info!("Measured CPU hashrate is {}", measured_hashrate);
+    let nominal_hash_rate = match nominal_hashrate_multiplier {
+        Some(m) => measured_hashrate * m,
+        None => measured_hashrate,
+    };
+
+    info!("MINING DEVICE: send open channel with request id {}", id);
+    OpenExtendedMiningChannel {
+        min_extranonce_size: 1,
         request_id: id.into(),
         user_identity,
         nominal_hash_rate,
@@ -263,10 +290,16 @@ impl Device {
                 should_send: true,
                 sender: notify_changes_to_mining_thread,
             },
+            extranonce_prefix: None,
+            extranonce_size: None,
         };
-        let open_channel = MiningDeviceMessages::Mining(Mining::OpenStandardMiningChannel(
-            open_channel(user_id, nominal_hashrate_multiplier, handicap),
+        // let open_channel = MiningDeviceMessages::Mining(Mining::OpenStandardMiningChannel(
+        //     open_channel(user_id, nominal_hashrate_multiplier, handicap),
+        // ));
+        let open_channel = MiningDeviceMessages::Mining(Mining::OpenExtendedMiningChannel(
+            open_extended_mining_channel(user_id, nominal_hashrate_multiplier, handicap),
         ));
+
         let frame: StdFrame = open_channel.try_into().unwrap();
         self_.sender.send(frame.into()).await.unwrap();
         let self_mutex = std::sync::Arc::new(Mutex::new(self_));
@@ -279,6 +312,10 @@ impl Device {
             let recv = share_recv.clone();
             loop {
                 let (nonce, job_id, version, ntime) = recv.recv().await.unwrap();
+                dbg!(&ntime);
+                dbg!(&version);
+                dbg!(&job_id);
+                dbg!(&nonce);
                 Self::send_share(cloned.clone(), nonce, job_id, version, ntime).await;
             }
         });
@@ -328,16 +365,24 @@ impl Device {
         version: u32,
         ntime: u32,
     ) {
-        let share =
-            MiningDeviceMessages::Mining(Mining::SubmitSharesStandard(SubmitSharesStandard {
+        let extended_share =
+            MiningDeviceMessages::Mining(Mining::SubmitSharesExtended(SubmitSharesExtended {
                 channel_id: self_mutex.safe_lock(|s| s.channel_id.unwrap()).unwrap(),
                 sequence_number: self_mutex.safe_lock(|s| s.sequence_numbers.next()).unwrap(),
                 job_id,
                 nonce,
                 ntime,
                 version,
+                extranonce: Extranonce::new(
+                    self_mutex
+                        .safe_lock(|s| s.extranonce_size.clone())
+                        .unwrap()
+                        .unwrap() as usize,
+                )
+                .unwrap()
+                .into_b032(),
             }));
-        let frame: StdFrame = share.try_into().unwrap();
+        let frame: StdFrame = extended_share.try_into().unwrap();
         let sender = self_mutex.safe_lock(|s| s.sender.clone()).unwrap();
         sender.send(frame.into()).await.unwrap();
     }
@@ -418,9 +463,23 @@ impl ParseUpstreamMiningMessages<(), NullDownstreamMiningSelector, NoRouting> fo
 
     fn handle_open_extended_mining_channel_success(
         &mut self,
-        _: OpenExtendedMiningChannelSuccess,
+        m: OpenExtendedMiningChannelSuccess,
     ) -> Result<SendTo<()>, Error> {
-        unreachable!()
+        let tproxy_e1_len = (m.extranonce_size as usize - 1) as u16;
+        if 1 + tproxy_e1_len < m.extranonce_size {
+            panic!("Extranonce size is too small: {}", m.extranonce_size);
+        }
+        self.miner
+            .safe_lock(|miner| miner.new_target(m.target.to_vec()))
+            .unwrap();
+
+        info!("Up: Successfully Opened Extended Mining Channel");
+        self.channel_id = Some(m.channel_id);
+        self.extranonce_prefix = Some(m.extranonce_prefix.to_vec());
+        self.extranonce_size = Some(m.extranonce_size);
+        self.notify_changes_to_mining_thread.should_send = true;
+        let m = Mining::OpenExtendedMiningChannelSuccess(m.into_static());
+        Ok(SendTo::None(Some(m)))
     }
 
     fn handle_open_mining_channel_error(
@@ -677,6 +736,7 @@ fn start_mining_threads(
         loop {
             let p = available_parallelism().unwrap().get() as u32;
             let unit = u32::MAX / p;
+            dbg!("before recv");
             while have_new_job.recv().await.is_ok() {
                 while let Some(killer) = killers.pop() {
                     killer.store(true, Ordering::Relaxed);

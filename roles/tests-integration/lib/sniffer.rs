@@ -172,6 +172,14 @@ impl Sniffer {
         self.messages_from_upstream.next_message()
     }
 
+    pub fn log_messages(&self) {
+        println!(
+            "Messages from downstream: {:?}",
+            self.messages_from_downstream
+        );
+        println!("Messages from upstream: {:?}", self.messages_from_upstream);
+    }
+
     async fn create_downstream(
         stream: TcpStream,
     ) -> Option<(Receiver<MessageFrame>, Sender<MessageFrame>)> {
