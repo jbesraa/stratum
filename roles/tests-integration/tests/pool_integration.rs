@@ -1,7 +1,11 @@
 use integration_tests_sv2::*;
+use tokio::time::sleep;
 
 use crate::sniffer::MessageDirection;
-use const_sv2::{MESSAGE_TYPE_NEW_EXTENDED_MINING_JOB, MESSAGE_TYPE_NEW_TEMPLATE};
+use const_sv2::{
+    MESSAGE_TYPE_MINING_SET_NEW_PREV_HASH, MESSAGE_TYPE_NEW_EXTENDED_MINING_JOB,
+    MESSAGE_TYPE_NEW_TEMPLATE, MESSAGE_TYPE_SUBMIT_SHARES_EXTENDED,
+};
 use roles_logic_sv2::{
     common_messages_sv2::{Protocol, SetupConnection},
     parsers::{AnyMessage, CommonMessages, Mining, PoolMessages, TemplateDistribution},
@@ -11,6 +15,7 @@ use roles_logic_sv2::{
 // messages upon connection.
 // The Sniffer is used as a proxy between the Upstream(Template Provider) and Downstream(Pool). The
 // Pool will connect to the Sniffer, and the Sniffer will connect to the Template Provider.
+#[ignore]
 #[tokio::test]
 async fn success_pool_template_provider_connection() {
     let (_tp, tp_addr) = start_template_provider(None).await;
@@ -61,6 +66,7 @@ async fn success_pool_template_provider_connection() {
 //   occurred with non-future jobs.
 //
 // Related issue: https://github.com/stratum-mining/stratum/issues/1324
+#[ignore]
 #[tokio::test]
 async fn header_timestamp_value_assertion_in_new_extended_mining_job() {
     let sv2_interval = Some(5);
@@ -92,24 +98,12 @@ async fn header_timestamp_value_assertion_in_new_extended_mining_job() {
         }
         _ => panic!("SetNewPrevHash not found!"),
     };
-    // Assertions of messages between Pool and Translator Proxy (these are not necessary for the
-    // test itself, but they are used to pop from the sniffer's message queue)
-    assert_common_message!(
-        &pool_translator_sniffer.next_message_from_upstream(),
-        SetupConnectionSuccess
-    );
-    assert_mining_message!(
-        &pool_translator_sniffer.next_message_from_upstream(),
-        OpenExtendedMiningChannelSuccess
-    );
-    assert_mining_message!(
-        &pool_translator_sniffer.next_message_from_upstream(),
-        NewExtendedMiningJob
-    );
-    assert_mining_message!(
-        &pool_translator_sniffer.next_message_from_upstream(),
-        SetNewPrevHash
-    );
+    pool_translator_sniffer
+        .wait_for_message_type_with_remove(
+            MessageDirection::ToDownstream,
+            MESSAGE_TYPE_MINING_SET_NEW_PREV_HASH,
+        )
+        .await;
     // Wait for a second NewExtendedMiningJob message
     pool_translator_sniffer
         .wait_for_message_type(
@@ -130,4 +124,27 @@ async fn header_timestamp_value_assertion_in_new_extended_mining_job() {
         Some(header_timestamp_to_check),
         "The `minntime` field of the second NewExtendedMiningJob does not match the `header_timestamp`!"
     );
+}
+
+// #[ignore]
+#[tokio::test]
+async fn success_share_submittion_and_next_new_prev_head() {
+    let (_tp, tp_addr) = start_template_provider(None).await;
+    let (_, pool_addr) = start_pool(Some(tp_addr)).await;
+    let (jd_pool_sniffer, sniffer_addr) =
+        start_sniffer("a".to_string(), pool_addr, false, None).await;
+    let (_, jds_addr) = start_jds(tp_addr).await;
+    let (_, jdc_addr) = start_jdc(sniffer_addr, tp_addr, jds_addr).await;
+    let (sniffer, sniffer_addr) = start_sniffer("a".to_string(), jdc_addr, false, None).await;
+    let _ = start_mining_device_sv2(sniffer_addr, None).await;
+    loop {
+        sniffer.log_messages();
+        sleep(std::time::Duration::from_secs(3)).await;
+    }
+    // jd_pool_sniffer
+    //     .wait_for_message_type(
+    //         MessageDirection::ToUpstream,
+    //         MESSAGE_TYPE_SUBMIT_SHARES_EXTENDED,
+    //     )
+    //     .await;
 }

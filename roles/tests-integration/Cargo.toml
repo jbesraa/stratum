@@ -27,6 +27,7 @@ network_helpers_sv2 = { path = "../roles-utils/network-helpers", features =["wit
 pool_sv2 = { path = "../pool" }
 roles_logic_sv2 = { path = "../../protocols/v2/roles-logic-sv2" }
 mining_device_sv1 = { path = "../test-utils/mining-device-sv1" }
+mining_device = { path = "../test-utils/mining-device" }
 tar = "0.4.41"
 tokio = { version="1.36.0",features = ["full","tracing"] }
 tracing = "0.1.40"
