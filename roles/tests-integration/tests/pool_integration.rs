@@ -4,7 +4,7 @@ use tokio::time::sleep;
 use crate::sniffer::MessageDirection;
 use const_sv2::{
     MESSAGE_TYPE_MINING_SET_NEW_PREV_HASH, MESSAGE_TYPE_NEW_EXTENDED_MINING_JOB,
-    MESSAGE_TYPE_NEW_TEMPLATE, MESSAGE_TYPE_SUBMIT_SHARES_EXTENDED,
+    MESSAGE_TYPE_NEW_TEMPLATE,
 };
 use roles_logic_sv2::{
     common_messages_sv2::{Protocol, SetupConnection},
@@ -140,7 +140,7 @@ async fn success_share_submittion_and_next_new_prev_head() {
     loop {
         sniffer.log_messages();
         sleep(std::time::Duration::from_secs(3)).await;
-    };
+    }
     // jd_pool_sniffer
     //     .wait_for_message_type(
     //         MessageDirection::ToUpstream,
