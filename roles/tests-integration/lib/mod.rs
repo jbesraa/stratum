@@ -17,7 +17,7 @@ pub mod sniffer;
 pub mod template_provider;
 mod utils;
 
-pub async fn start_sniffer(
+pub fn start_sniffer(
     identifier: String,
     upstream: SocketAddr,
     check_on_drop: bool,
@@ -30,8 +30,7 @@ pub async fn start_sniffer(
         upstream,
         check_on_drop,
         intercept_message,
-    )
-    .await;
+    );
     let sniffer_clone = sniffer.clone();
     tokio::spawn(async move {
         sniffer_clone.start().await;
@@ -84,7 +83,7 @@ pub fn start_pool(template_provider_address: Option<SocketAddr>) -> (PoolSv2, So
     (pool, listening_address)
 }
 
-pub async fn start_template_provider(sv2_interval: Option<u32>) -> (TemplateProvider, SocketAddr) {
+pub fn start_template_provider(sv2_interval: Option<u32>) -> (TemplateProvider, SocketAddr) {
     let address = get_available_address();
     let sv2_interval = sv2_interval.unwrap_or(20);
     let template_provider = TemplateProvider::start(address.port(), sv2_interval);

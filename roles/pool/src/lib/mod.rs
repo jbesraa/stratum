@@ -65,39 +65,42 @@ impl PoolSv2 {
         // See `./status.rs` and `utils/error_handling` for information on how this operates
 
         let status_loop = move || {
-            loop {
-                let task_status = status_rx.recv_blocking();
-                let task_status: status::Status = task_status.unwrap();
+            runtime.spawn(async move {
+                loop {
+                    let task_status = status_rx.recv().await;
+                    let task_status: status::Status = task_status.unwrap();
 
-                match task_status.state {
-                    // Should only be sent by the downstream listener
-                    status::State::DownstreamShutdown(err) => {
-                        error!(
-                            "SHUTDOWN from Downstream: {}\nTry to restart the downstream listener",
-                            err
-                        );
-                        break;
-                    }
-                    status::State::TemplateProviderShutdown(err) => {
-                        error!("SHUTDOWN from Upstream: {}\nTry to reconnecting or connecting to a new upstream", err);
-                        break;
-                    }
-                    status::State::Healthy(msg) => {
-                        info!("HEALTHY message: {}", msg);
-                    }
-                    status::State::DownstreamInstanceDropped(downstream_id) => {
-                        warn!("Dropping downstream instance {} from pool", downstream_id);
-                        if pool
-                            .safe_lock(|p| p.remove_downstream(downstream_id))
-                            .is_err()
-                        {
+                    match task_status.state {
+                        // Should only be sent by the downstream listener
+                        status::State::DownstreamShutdown(err) => {
+                            error!(
+                                "SHUTDOWN from Downstream: {}\nTry to restart the downstream listener",
+                                err
+                            );
                             break;
+                        }
+                        status::State::TemplateProviderShutdown(err) => {
+                            error!("SHUTDOWN from Upstream: {}\nTry to reconnecting or connecting to a new upstream", err);
+                            break;
+                        }
+                        status::State::Healthy(msg) => {
+                            info!("HEALTHY message: {}", msg);
+                        }
+                        status::State::DownstreamInstanceDropped(downstream_id) => {
+                            warn!("Dropping downstream instance {} from pool", downstream_id);
+                            if pool
+                                .safe_lock(|p| p.remove_downstream(downstream_id))
+                                .is_err()
+                            {
+                                break;
+                            }
                         }
                     }
                 }
-            }
+            })
         };
-        std::thread::spawn(status_loop);
+        status_loop();
+        // std::thread::spawn(status_loop);
         // status_loop();
         Ok(())
     }
