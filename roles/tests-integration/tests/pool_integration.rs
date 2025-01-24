@@ -18,7 +18,7 @@ use roles_logic_sv2::{
 async fn success_pool_template_provider_connection() {
     let (_tp, tp_addr) = start_template_provider(None).await;
     let (sniffer, sniffer_addr) = start_sniffer("".to_string(), tp_addr, true, None).await;
-    let _ = start_pool(Some(sniffer_addr)).await;
+    let _ = start_pool(Some(sniffer_addr));
     // here we assert that the downstream(pool in this case) have sent `SetupConnection` message
     // with the correct parameters, protocol, flags, min_version and max_version.  Note that the
     // macro can take any number of arguments after the message argument, but the order is
@@ -72,7 +72,7 @@ async fn header_timestamp_value_assertion_in_new_extended_mining_job() {
         "header_timestamp_value_assertion_in_new_extended_mining_job tp_pool sniffer".to_string();
     let (tp_pool_sniffer, tp_pool_sniffer_addr) =
         start_sniffer(tp_pool_sniffer_identifier, tp_addr, false, None).await;
-    let (_, pool_addr) = start_pool(Some(tp_pool_sniffer_addr)).await;
+    let (_, pool_addr) = start_pool(Some(tp_pool_sniffer_addr));
     let pool_translator_sniffer_identifier =
         "header_timestamp_value_assertion_in_new_extended_mining_job pool_translator sniffer"
             .to_string();

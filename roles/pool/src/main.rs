@@ -68,8 +68,7 @@ mod args {
     }
 }
 
-#[tokio::main]
-async fn main() {
+fn main() {
     tracing_subscriber::fmt::init();
 
     let args = match args::Args::from_args() {
@@ -99,5 +98,5 @@ async fn main() {
             return;
         }
     };
-    let _ = PoolSv2::new(config).start().await;
+    let _ = PoolSv2::new(config).start();
 }

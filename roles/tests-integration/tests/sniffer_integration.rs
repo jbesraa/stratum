@@ -38,7 +38,7 @@ async fn test_sniffer_intercept() {
     let (sniffer_b, sniffer_b_addr) =
         start_sniffer("B".to_string(), sniffer_a_addr, false, None).await;
 
-    let _ = start_pool(Some(sniffer_b_addr)).await;
+    let _ = start_pool(Some(sniffer_b_addr));
 
     // assert sniffer_a functionality of replacing messages work as expected (goal of this test)
     assert_common_message!(
@@ -51,7 +51,7 @@ async fn test_sniffer_intercept() {
 async fn test_sniffer_wait_for_message_type_with_remove() {
     let (_tp, tp_addr) = start_template_provider(None).await;
     let (sniffer, sniffer_addr) = start_sniffer("".to_string(), tp_addr, false, None).await;
-    let _ = start_pool(Some(sniffer_addr)).await;
+    let _ = start_pool(Some(sniffer_addr));
     assert!(
         sniffer
             .wait_for_message_type_and_clean_queue(
