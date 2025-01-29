@@ -98,7 +98,7 @@ pub enum MessageDirection {
 impl Sniffer {
     /// Creates a new sniffer that listens on the given listening address and connects to the given
     /// upstream address.
-    pub async fn new(
+    pub fn new(
         identifier: String,
         listening_address: SocketAddr,
         upstream_address: SocketAddr,

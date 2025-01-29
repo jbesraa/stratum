@@ -17,7 +17,7 @@ pub mod sniffer;
 pub mod template_provider;
 mod utils;
 
-pub async fn start_sniffer(
+pub fn start_sniffer(
     identifier: String,
     upstream: SocketAddr,
     check_on_drop: bool,
@@ -30,8 +30,7 @@ pub async fn start_sniffer(
         upstream,
         check_on_drop,
         intercept_message,
-    )
-    .await;
+    );
     let sniffer_clone = sniffer.clone();
     tokio::spawn(async move {
         sniffer_clone.start().await;
@@ -39,7 +38,7 @@ pub async fn start_sniffer(
     (sniffer, listening_address)
 }
 
-pub async fn start_pool(template_provider_address: Option<SocketAddr>) -> (PoolSv2, SocketAddr) {
+pub fn start_pool(template_provider_address: Option<SocketAddr>) -> (PoolSv2, SocketAddr) {
     use pool_sv2::mining_pool::{CoinbaseOutput, Configuration};
     let listening_address = get_available_address();
     let authority_public_key = Secp256k1PublicKey::try_from(
@@ -78,15 +77,13 @@ pub async fn start_pool(template_provider_address: Option<SocketAddr>) -> (PoolS
     );
     let pool = PoolSv2::new(config);
     let pool_clone = pool.clone();
-    tokio::task::spawn(async move {
-        assert!(pool_clone.start().await.is_ok());
-    });
+    let _p = pool_clone.start();
     // Wait a bit to let the pool exchange initial messages with the TP
-    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    // tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     (pool, listening_address)
 }
 
-pub async fn start_template_provider(sv2_interval: Option<u32>) -> (TemplateProvider, SocketAddr) {
+pub fn start_template_provider(sv2_interval: Option<u32>) -> (TemplateProvider, SocketAddr) {
     let address = get_available_address();
     let sv2_interval = sv2_interval.unwrap_or(20);
     let template_provider = TemplateProvider::start(address.port(), sv2_interval);
