@@ -13,6 +13,8 @@ pub mod noise_connection_tokio;
 #[cfg(feature = "tokio")]
 pub mod plain_connection_tokio;
 
+pub mod noise_with_tokio_channels;
+
 use async_channel::{Receiver, RecvError, SendError, Sender};
 use codec_sv2::{Error as CodecError, HandShakeFrame, HandshakeRole, StandardEitherFrame};
 use const_sv2::{
