@@ -14,6 +14,7 @@ use std::{
 use utils::get_available_address;
 
 pub mod sniffer;
+pub mod snifer_tokio;
 pub mod template_provider;
 mod utils;
 
