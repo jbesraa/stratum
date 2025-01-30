@@ -1,4 +1,3 @@
-#[cfg(feature = "with_tokio")]
 use crate::Error;
 use binary_sv2::{Deserialize, Serialize};
 use const_sv2::{

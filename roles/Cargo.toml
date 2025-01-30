@@ -10,7 +10,7 @@ members = [
     "translator",
     "jd-client",
     "jd-server",
-    "tests-integration", "test-utils/downstream_mock", "test-utils/upstream_mock",
+    "tests-integration", "test-utils/downstream_mock", "test-utils/upstream_mock", "roles-utils/connection",
 ]
 
 [profile.dev]

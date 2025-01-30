@@ -720,6 +720,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "connection"
+version = "0.1.0"
+dependencies = [
+ "binary_sv2",
+ "codec_sv2",
+ "const_sv2",
+ "key-utils",
+ "roles_logic_sv2",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "const-random"
 version = "0.1.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -901,6 +914,14 @@ dependencies = [
 [[package]]
 name = "downstream_mock"
 version = "0.1.0"
+dependencies = [
+ "binary_sv2",
+ "codec_sv2",
+ "connection",
+ "key-utils",
+ "roles_logic_sv2",
+ "tokio",
+]
 
 [[package]]
 name = "either"
