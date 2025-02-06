@@ -918,7 +918,9 @@ dependencies = [
  "binary_sv2",
  "codec_sv2",
  "connection",
+ "const_sv2",
  "key-utils",
+ "noise_sv2",
  "roles_logic_sv2",
  "tokio",
 ]
@@ -2818,7 +2820,9 @@ dependencies = [
  "binary_sv2",
  "codec_sv2",
  "connection",
+ "const_sv2",
  "key-utils",
+ "noise_sv2",
  "roles_logic_sv2",
  "tokio",
 ]
