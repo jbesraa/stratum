@@ -59,6 +59,15 @@ impl JDsMempool {
         }
     }
 
+    /// Checks if bitcoin node RPC credentials are correct
+    pub async fn health(self_: Arc<Mutex<Self>>) -> Result<(), JdsMempoolError> {
+        let client = self_
+            .safe_lock(|a| a.get_client())?
+            .ok_or(JdsMempoolError::NoClient)?;
+        dbg!(&client);
+        client.health().await.map_err(JdsMempoolError::Rpc)
+    }
+
     // this functions fill in the mempool the transactions with the given txid and insert the given
     // transactions. The ids are for the transactions that are already known to the node, the
     // unknown transactions are provided directly as a vector
