@@ -1,19 +1,11 @@
-pub mod error;
-pub mod job_declarator;
-pub mod mempool;
-pub mod status;
-
 use async_channel::{bounded, unbounded, Receiver, Sender};
+use codec_sv2::{StandardEitherFrame, StandardSv2Frame};
+use error::JdsError;
 use error_handling::handle_result;
 use job_declarator::JobDeclarator;
+use key_utils::{Secp256k1PublicKey, Secp256k1SecretKey};
 use mempool::error::JdsMempoolError;
 use roles_logic_sv2::utils::Mutex;
-use std::{ops::Sub, sync::Arc};
-use tokio::{select, task};
-use tracing::{error, info, warn};
-
-use codec_sv2::{StandardEitherFrame, StandardSv2Frame};
-use key_utils::{Secp256k1PublicKey, Secp256k1SecretKey};
 use roles_logic_sv2::{
     errors::Error, parsers::PoolMessages as JdsMessages, utils::CoinbaseOutput as CoinbaseOutput_,
 };
@@ -22,7 +14,18 @@ use std::{
     convert::{TryFrom, TryInto},
     time::Duration,
 };
-use stratum_common::bitcoin::{Script, TxOut};
+use std::{ops::Sub, sync::Arc};
+use stratum_common::{
+    bitcoin::{Script, TxOut},
+    url::is_valid_url,
+};
+use tokio::{select, task};
+use tracing::{error, info, warn};
+
+pub mod error;
+pub mod job_declarator;
+pub mod mempool;
+pub mod status;
 
 pub type Message = JdsMessages<'static>;
 pub type StdFrame = StandardSv2Frame<Message>;
@@ -34,15 +37,24 @@ pub struct JobDeclaratorServer {
 }
 
 impl JobDeclaratorServer {
-    pub fn new(config: Configuration) -> Self {
-        Self { config }
+    pub fn new(config: Configuration) -> Result<Self, Box<JdsError>> {
+        let url = config.core_rpc_url.clone() + ":" + &config.core_rpc_port.clone().to_string();
+        if !is_valid_url(&url) {
+            return Err(Box::new(JdsError::InvalidRPCUrl));
+        }
+        Ok(Self { config })
     }
-    pub async fn start(&self) {
+    pub async fn start(&self) -> Result<(), JdsError> {
         let config = self.config.clone();
         let url = config.core_rpc_url.clone() + ":" + &config.core_rpc_port.clone().to_string();
         let username = config.core_rpc_user.clone();
         let password = config.core_rpc_pass.clone();
-        // TODO should we manage what to do when the limit is reaced?
+        // This channe is used in order to notify the mempool that a new block has been found.
+        //
+        // `JDsMempool::on_submit` calls `new_block_receiver` in order to get the new block hex.
+        //
+        // `new_block_sender` is sending the new block hex to `new_block_receiver` in the
+        // `JobDeclaratorDownstream::start` function.
         let (new_block_sender, new_block_receiver): (Sender<String>, Receiver<String>) =
             bounded(10);
         let mempool = Arc::new(Mutex::new(mempool::JDsMempool::new(
@@ -53,78 +65,92 @@ impl JobDeclaratorServer {
         )));
         let mempool_update_interval = config.mempool_update_interval;
         let mempool_cloned_ = mempool.clone();
+        let mempool_cloned_1 = mempool.clone();
+        if let Err(e) = mempool::JDsMempool::health(mempool_cloned_1.clone()).await {
+            error!("{:?}", e);
+            return Err(JdsError::MempoolError(e));
+        }
+        // This channels represent the status of the server
+        //
+        // `status_tx` is used to update the status of the server, while `status_rx` is used to
+        // receive the status of the server.
         let (status_tx, status_rx) = unbounded();
         let sender = status::Sender::Downstream(status_tx.clone());
         let mut last_empty_mempool_warning =
             std::time::Instant::now().sub(std::time::Duration::from_secs(60));
 
-        // TODO if the jd-server is launched with core_rpc_url empty, the following flow is never
-        // taken. Consequentally new_block_receiver in JDsMempool::on_submit is never read, possibly
-        // reaching the channel bound. The new_block_sender is given as input to
-        // JobDeclarator::start()
-        if url.contains("http") {
-            let sender_update_mempool = sender.clone();
-            task::spawn(async move {
-                loop {
-                    let update_mempool_result: Result<(), mempool::error::JdsMempoolError> =
-                        mempool::JDsMempool::update_mempool(mempool_cloned_.clone()).await;
-                    if let Err(err) = update_mempool_result {
-                        match err {
-                            JdsMempoolError::EmptyMempool => {
-                                if last_empty_mempool_warning.elapsed().as_secs() >= 60 {
-                                    warn!("{:?}", err);
-                                    warn!("Template Provider is running, but its mempool is empty (possible reasons: you're testing in testnet, signet, or regtest)");
-                                    last_empty_mempool_warning = std::time::Instant::now();
-                                }
-                            }
-                            JdsMempoolError::NoClient => {
-                                mempool::error::handle_error(&err);
-                                handle_result!(sender_update_mempool, Err(err));
-                            }
-                            JdsMempoolError::Rpc(_) => {
-                                mempool::error::handle_error(&err);
-                                handle_result!(sender_update_mempool, Err(err));
-                            }
-                            JdsMempoolError::PoisonLock(_) => {
-                                mempool::error::handle_error(&err);
-                                handle_result!(sender_update_mempool, Err(err));
+        let sender_update_mempool = sender.clone();
+        // Spawn an async task that continuously updates the mempool with `get_raw_mempool` rpc call
+        // data.
+        task::spawn(async move {
+            loop {
+                let update_mempool_result: Result<(), mempool::error::JdsMempoolError> =
+                    mempool::JDsMempool::update_mempool(mempool_cloned_.clone()).await;
+                if let Err(err) = update_mempool_result {
+                    match err {
+                        JdsMempoolError::EmptyMempool => {
+                            if last_empty_mempool_warning.elapsed().as_secs() >= 60 {
+                                warn!("{:?}", err);
+                                warn!("Template Provider is running, but its mempool is empty (possible reasons: you're testing in testnet, signet, or regtest)");
+                                last_empty_mempool_warning = std::time::Instant::now();
                             }
                         }
+                        JdsMempoolError::NoClient => {
+                            mempool::error::handle_error(&err);
+                            handle_result!(sender_update_mempool, Err(err));
+                        }
+                        JdsMempoolError::Rpc(_) => {
+                            mempool::error::handle_error(&err);
+                            handle_result!(sender_update_mempool, Err(err));
+                        }
+                        JdsMempoolError::PoisonLock(_) => {
+                            mempool::error::handle_error(&err);
+                            handle_result!(sender_update_mempool, Err(err));
+                        }
                     }
-                    tokio::time::sleep(mempool_update_interval).await;
-                    // DO NOT REMOVE THIS LINE
-                    //let _transactions =
-                    // mempool::JDsMempool::_get_transaction_list(mempool_cloned_.clone());
                 }
-            });
+                tokio::time::sleep(mempool_update_interval).await;
+                // DO NOT REMOVE THIS LINE
+                //let _transactions =
+                // mempool::JDsMempool::_get_transaction_list(mempool_cloned_.clone());
+            }
+        });
 
-            let mempool_cloned = mempool.clone();
-            let sender_submit_solution = sender.clone();
-            task::spawn(async move {
-                loop {
-                    let result = mempool::JDsMempool::on_submit(mempool_cloned.clone()).await;
-                    if let Err(err) = result {
-                        match err {
-                            JdsMempoolError::EmptyMempool => {
-                                if last_empty_mempool_warning.elapsed().as_secs() >= 60 {
-                                    warn!("{:?}", err);
-                                    warn!("Template Provider is running, but its mempool is empty (possible reasons: you're testing in testnet, signet, or regtest)");
-                                    last_empty_mempool_warning = std::time::Instant::now();
-                                }
+        let mempool_cloned = mempool.clone();
+        let sender_submit_solution = sender.clone();
+        // Spawn an async task that continuously attempts to submit solutions to the mempool.
+        task::spawn(async move {
+            loop {
+                let result = mempool::JDsMempool::on_submit(mempool_cloned.clone()).await;
+                if let Err(err) = result {
+                    match err {
+                        JdsMempoolError::EmptyMempool => {
+                            if last_empty_mempool_warning.elapsed().as_secs() >= 60 {
+                                warn!("{:?}", err);
+                                warn!("Template Provider is running, but its mempool is empty (possible reasons: you're testing in testnet, signet, or regtest)");
+                                last_empty_mempool_warning = std::time::Instant::now();
                             }
-                            _ => {
-                                // TODO here there should be a better error managmenet
-                                mempool::error::handle_error(&err);
-                                handle_result!(sender_submit_solution, Err(err));
-                            }
+                        }
+                        _ => {
+                            // TODO here there should be a better error managmenet
+                            mempool::error::handle_error(&err);
+                            handle_result!(sender_submit_solution, Err(err));
                         }
                     }
                 }
-            });
-        };
+            }
+        });
 
         let cloned = config.clone();
         let mempool_cloned = mempool.clone();
+        // This channel is used in order to update the mempool with new transactions.
+        //
+        // `sender_add_txs_to_mempool` is executed when  eithr of the following messages are
+        // sent: `JobDeclaration::ProvideMissingTransactions`
+        // `JobDeclaration::DeclareMiningJobSuccess`.
+        //
+        // when `receiver_add_txs_to_mempool` receives new transactions, it sends them to the
+        // `JDsMempool::add_tx_data_to_mempool` function.
         let (sender_add_txs_to_mempool, receiver_add_txs_to_mempool) = unbounded();
         task::spawn(async move {
             JobDeclarator::start(
@@ -136,6 +162,7 @@ impl JobDeclaratorServer {
             )
             .await
         });
+        // Spawn an async task that updates the mempool with new transactions.
         task::spawn(async move {
             loop {
                 if let Ok(add_transactions_to_mempool) = receiver_add_txs_to_mempool.recv().await {
@@ -199,6 +226,7 @@ impl JobDeclaratorServer {
                 }
             }
         }
+        Ok(())
     }
 }
 
@@ -364,6 +392,21 @@ mod tests {
             .expect("Failed to build config");
 
         settings.try_deserialize().expect("Failed to parse config")
+    }
+
+    #[tokio::test]
+    async fn test_invalid_rpc_url() {
+        let mut config = load_config("config-examples/jds-config-hosted-example.toml");
+        config.core_rpc_url = "invalid".to_string();
+        assert!(JobDeclaratorServer::new(config).is_err());
+    }
+
+    #[tokio::test]
+    async fn test_offline_rpc_url() {
+        let mut config = load_config("config-examples/jds-config-hosted-example.toml");
+        config.core_rpc_url = "http://127.0.0.1".to_string();
+        let jd = JobDeclaratorServer::new(config).unwrap();
+        assert!(jd.start().await.is_err());
     }
 
     #[test]

@@ -1,4 +1,3 @@
-pub mod message_handler;
 use super::{error::JdsError, mempool::JDsMempool, status, Configuration, EitherFrame, StdFrame};
 use async_channel::{Receiver, Sender};
 use binary_sv2::{B0255, U256};
@@ -18,13 +17,144 @@ use roles_logic_sv2::{
     utils::{Id, Mutex},
 };
 use std::{collections::HashMap, convert::TryInto, sync::Arc};
-use tokio::{net::TcpListener, time::Duration};
-use tracing::{debug, error, info};
-
 use stratum_common::bitcoin::{
     consensus::{encode::serialize, Encodable},
     Block, Transaction, Txid,
 };
+use tokio::{net::TcpListener, time::Duration};
+use tracing::{debug, error, info};
+
+pub mod message_handler;
+
+/// Responsible for handling downstream connections in the Job Declarator Server.
+pub struct JobDeclarator {}
+
+impl JobDeclarator {
+    /// Start the Job Declarator Server.
+    ///
+    /// Await incoming connections from downstream clients.
+    pub async fn start(
+        config: Configuration,
+        status_tx: crate::status::Sender,
+        mempool: Arc<Mutex<JDsMempool>>,
+        new_block_sender: Sender<String>,
+        sender_add_txs_to_mempool: Sender<AddTrasactionsToMempoolInner>,
+    ) {
+        let self_ = Arc::new(Mutex::new(Self {}));
+        Self::accept_incoming_connection(
+            self_,
+            config,
+            status_tx,
+            mempool,
+            new_block_sender,
+            sender_add_txs_to_mempool,
+        )
+        .await;
+    }
+    async fn accept_incoming_connection(
+        _self_: Arc<Mutex<JobDeclarator>>,
+        config: Configuration,
+        status_tx: crate::status::Sender,
+        mempool: Arc<Mutex<JDsMempool>>,
+        new_block_sender: Sender<String>,
+        sender_add_txs_to_mempool: Sender<AddTrasactionsToMempoolInner>,
+    ) {
+        let listener = TcpListener::bind(&config.listen_jd_address).await.unwrap();
+
+        while let Ok((stream, _)) = listener.accept().await {
+            let responder = Responder::from_authority_kp(
+                &config.authority_public_key.into_bytes(),
+                &config.authority_secret_key.into_bytes(),
+                std::time::Duration::from_secs(config.cert_validity_sec),
+            )
+            .unwrap();
+
+            let addr = stream.peer_addr();
+
+            if let Ok((receiver, sender, _, _)) =
+                Connection::new(stream, HandshakeRole::Responder(responder)).await
+            {
+                match receiver.recv().await {
+                    Ok(EitherFrame::Sv2(mut sv2_message)) => {
+                        debug!("Received SV2 message: {:?}", sv2_message);
+                        let payload = sv2_message.payload();
+
+                        if let Ok(setup_connection) =
+                            binary_sv2::from_bytes::<SetupConnection>(payload)
+                        {
+                            let flag = setup_connection.flags;
+                            let is_valid = SetupConnection::check_flags(
+                                Protocol::JobDeclarationProtocol,
+                                config.async_mining_allowed as u32,
+                                flag,
+                            );
+
+                            if is_valid {
+                                let success_message = SetupConnectionSuccess {
+                                    used_version: 2,
+                                    flags: (setup_connection.flags & 1u32),
+                                };
+                                info!("Sending success message for proxy");
+                                let sv2_frame: StdFrame = JdsMessages::Common(success_message.into())
+        .try_into()
+        .expect("Failed to convert setup connection response message to standard frame");
+
+                                sender.send(sv2_frame.into()).await.unwrap();
+
+                                let jddownstream = Arc::new(Mutex::new(
+                                    JobDeclaratorDownstream::new(
+                                        (setup_connection.flags & 1u32) != 0u32, /* this takes a
+                                                                                  * bool instead
+                                                                                  * of u32 */
+                                        receiver.clone(),
+                                        sender.clone(),
+                                        &config,
+                                        mempool.clone(),
+                                        sender_add_txs_to_mempool.clone(), /* each downstream has its own sender (multi producer single consumer) */
+                                    ),
+                                ));
+
+                                JobDeclaratorDownstream::start(
+                                    jddownstream,
+                                    status_tx.clone(),
+                                    new_block_sender.clone(),
+                                );
+                            } else {
+                                let error_message = SetupConnectionError {
+                                    flags: flag,
+                                    error_code: "unsupported-feature-flags"
+                                        .to_string()
+                                        .into_bytes()
+                                        .try_into()
+                                        .unwrap(),
+                                };
+                                info!("Sending error message for proxy");
+                                let sv2_frame: StdFrame = JdsMessages::Common(error_message.into())
+        .try_into()
+        .expect("Failed to convert setup connection response message to standard frame");
+
+                                sender.send(sv2_frame.into()).await.unwrap();
+                            }
+                        } else {
+                            error!("Error parsing SetupConnection message");
+                        }
+                    }
+                    Ok(EitherFrame::HandShake(handshake_message)) => {
+                        error!(
+                            "Unexpected handshake message from upstream: {:?} at {:?}",
+                            handshake_message, addr
+                        );
+                    }
+                    Err(e) => {
+                        error!("Error receiving message: {:?}", e);
+                    }
+                }
+            } else {
+                error!("Cannot connect to {:?}", addr);
+            }
+        }
+    }
+}
 
 #[derive(Clone, Debug)]
 pub enum TransactionState {
@@ -45,6 +175,7 @@ pub struct AddTrasactionsToMempool {
     pub sender_add_txs_to_mempool: Sender<AddTrasactionsToMempoolInner>,
 }
 
+/// Responsible for handling a single downstream connection in the Job Declarator Server.
 #[derive(Debug)]
 pub struct JobDeclaratorDownstream {
     async_mining_allowed: bool,
@@ -70,6 +201,7 @@ pub struct JobDeclaratorDownstream {
 }
 
 impl JobDeclaratorDownstream {
+    /// Create a new [`JobDeclaratorDownstream`] instance.
     pub fn new(
         async_mining_allowed: bool,
         receiver: Receiver<EitherFrame>,
@@ -109,95 +241,10 @@ impl JobDeclaratorDownstream {
         }
     }
 
-    fn get_block_hex(
-        self_mutex: Arc<Mutex<Self>>,
-        message: SubmitSolutionJd,
-    ) -> Result<String, Box<JdsError>> {
-        let (last_declare_, _, _) = self_mutex
-            .clone()
-            .safe_lock(|x| x.declared_mining_job.clone())
-            .map_err(|e| Box::new(JdsError::PoisonLock(e.to_string())))?;
-        let last_declare = last_declare_.ok_or(Box::new(JdsError::NoLastDeclaredJob))?;
-        let transactions_list = Self::collect_txs_in_job(self_mutex)?;
-        let block: Block =
-            roles_logic_sv2::utils::BlockCreator::new(last_declare, transactions_list, message)
-                .into();
-        Ok(hex::encode(serialize(&block)))
-    }
-
-    fn collect_txs_in_job(self_mutex: Arc<Mutex<Self>>) -> Result<Vec<Transaction>, Box<JdsError>> {
-        let (_, transactions_with_state, _) = self_mutex
-            .clone()
-            .safe_lock(|x| x.declared_mining_job.clone())
-            .map_err(|e| Box::new(JdsError::PoisonLock(e.to_string())))?;
-        let mempool = self_mutex
-            .safe_lock(|x| x.mempool.clone())
-            .map_err(|e| Box::new(JdsError::PoisonLock(e.to_string())))?;
-        let mut transactions_list: Vec<Transaction> = Vec::new();
-        for tx_with_state in transactions_with_state.iter().enumerate() {
-            if let TransactionState::PresentInMempool(txid) = tx_with_state.1 {
-                let tx = mempool
-                    .safe_lock(|x| x.mempool.get(txid).cloned())
-                    .map_err(|e| JdsError::PoisonLock(e.to_string()))?
-                    .ok_or(Box::new(JdsError::ImpossibleToReconstructBlock(
-                        "Txid not found in jds mempool".to_string(),
-                    )))?
-                    .ok_or(Box::new(JdsError::ImpossibleToReconstructBlock(
-                        "Txid found in jds mempool but transactions not present".to_string(),
-                    )))?;
-                transactions_list.push(tx.0);
-            } else {
-                return Err(Box::new(JdsError::ImpossibleToReconstructBlock(
-                    "Unknown transaction".to_string(),
-                )));
-            };
-        }
-        Ok(transactions_list)
-    }
-
-    async fn send_txs_to_mempool(self_mutex: Arc<Mutex<Self>>) {
-        let add_txs_to_mempool = self_mutex
-            .safe_lock(|a| a.add_txs_to_mempool.clone())
-            .unwrap();
-        let sender_add_txs_to_mempool = add_txs_to_mempool.sender_add_txs_to_mempool;
-        let add_txs_to_mempool_inner = add_txs_to_mempool.add_txs_to_mempool_inner;
-        let _ = sender_add_txs_to_mempool
-            .send(add_txs_to_mempool_inner)
-            .await;
-        // the trasnactions sent to the mempool can be freed
-        let _ = self_mutex.safe_lock(|a| {
-            a.add_txs_to_mempool.add_txs_to_mempool_inner = AddTrasactionsToMempoolInner {
-                known_transactions: vec![],
-                unknown_transactions: vec![],
-            };
-        });
-    }
-
-    fn get_transactions_in_job(self_mutex: Arc<Mutex<Self>>) -> Vec<Txid> {
-        let mut known_transactions: Vec<Txid> = Vec::new();
-        let job_transactions = self_mutex
-            .safe_lock(|a| a.declared_mining_job.1.clone())
-            .unwrap();
-        for transaction in job_transactions {
-            match transaction {
-                TransactionState::PresentInMempool(txid) => known_transactions.push(txid),
-                TransactionState::Missing => {
-                    continue;
-                }
-            }
-        }
-        known_transactions
-    }
-
-    pub async fn send(
-        self_mutex: Arc<Mutex<Self>>,
-        message: roles_logic_sv2::parsers::JobDeclaration<'static>,
-    ) -> Result<(), ()> {
-        let sv2_frame: StdFrame = JdsMessages::JobDeclaration(message).try_into().unwrap();
-        let sender = self_mutex.safe_lock(|self_| self_.sender.clone()).unwrap();
-        sender.send(sv2_frame.into()).await.map_err(|_| ())?;
-        Ok(())
-    }
+    /// Responsible for handling all the messages received from the downstream client.
+    ///
+    /// Note that the handshake and `SetupConnection` messages should be handled prior to using
+    /// this method.
     pub fn start(
         self_mutex: Arc<Mutex<Self>>,
         tx_status: status::Sender,
@@ -401,6 +448,97 @@ impl JobDeclaratorDownstream {
             }
         });
     }
+
+    /// Send a message to the downstream client.
+    pub async fn send(
+        self_mutex: Arc<Mutex<Self>>,
+        message: roles_logic_sv2::parsers::JobDeclaration<'static>,
+    ) -> Result<(), ()> {
+        let sv2_frame: StdFrame = JdsMessages::JobDeclaration(message).try_into().unwrap();
+        let sender = self_mutex.safe_lock(|self_| self_.sender.clone()).unwrap();
+        sender.send(sv2_frame.into()).await.map_err(|_| ())?;
+        Ok(())
+    }
+
+    fn get_block_hex(
+        self_mutex: Arc<Mutex<Self>>,
+        message: SubmitSolutionJd,
+    ) -> Result<String, Box<JdsError>> {
+        let (last_declare_, _, _) = self_mutex
+            .clone()
+            .safe_lock(|x| x.declared_mining_job.clone())
+            .map_err(|e| Box::new(JdsError::PoisonLock(e.to_string())))?;
+        let last_declare = last_declare_.ok_or(Box::new(JdsError::NoLastDeclaredJob))?;
+        let transactions_list = Self::collect_txs_in_job(self_mutex)?;
+        let block: Block =
+            roles_logic_sv2::utils::BlockCreator::new(last_declare, transactions_list, message)
+                .into();
+        Ok(hex::encode(serialize(&block)))
+    }
+
+    fn collect_txs_in_job(self_mutex: Arc<Mutex<Self>>) -> Result<Vec<Transaction>, Box<JdsError>> {
+        let (_, transactions_with_state, _) = self_mutex
+            .clone()
+            .safe_lock(|x| x.declared_mining_job.clone())
+            .map_err(|e| Box::new(JdsError::PoisonLock(e.to_string())))?;
+        let mempool = self_mutex
+            .safe_lock(|x| x.mempool.clone())
+            .map_err(|e| Box::new(JdsError::PoisonLock(e.to_string())))?;
+        let mut transactions_list: Vec<Transaction> = Vec::new();
+        for tx_with_state in transactions_with_state.iter().enumerate() {
+            if let TransactionState::PresentInMempool(txid) = tx_with_state.1 {
+                let tx = mempool
+                    .safe_lock(|x| x.mempool.get(txid).cloned())
+                    .map_err(|e| JdsError::PoisonLock(e.to_string()))?
+                    .ok_or(Box::new(JdsError::ImpossibleToReconstructBlock(
+                        "Txid not found in jds mempool".to_string(),
+                    )))?
+                    .ok_or(Box::new(JdsError::ImpossibleToReconstructBlock(
+                        "Txid found in jds mempool but transactions not present".to_string(),
+                    )))?;
+                transactions_list.push(tx.0);
+            } else {
+                return Err(Box::new(JdsError::ImpossibleToReconstructBlock(
+                    "Unknown transaction".to_string(),
+                )));
+            };
+        }
+        Ok(transactions_list)
+    }
+
+    async fn send_txs_to_mempool(self_mutex: Arc<Mutex<Self>>) {
+        let add_txs_to_mempool = self_mutex
+            .safe_lock(|a| a.add_txs_to_mempool.clone())
+            .unwrap();
+        let sender_add_txs_to_mempool = add_txs_to_mempool.sender_add_txs_to_mempool;
+        let add_txs_to_mempool_inner = add_txs_to_mempool.add_txs_to_mempool_inner;
+        let _ = sender_add_txs_to_mempool
+            .send(add_txs_to_mempool_inner)
+            .await;
+        // the trasnactions sent to the mempool can be freed
+        let _ = self_mutex.safe_lock(|a| {
+            a.add_txs_to_mempool.add_txs_to_mempool_inner = AddTrasactionsToMempoolInner {
+                known_transactions: vec![],
+                unknown_transactions: vec![],
+            };
+        });
+    }
+
+    fn get_transactions_in_job(self_mutex: Arc<Mutex<Self>>) -> Vec<Txid> {
+        let mut known_transactions: Vec<Txid> = Vec::new();
+        let job_transactions = self_mutex
+            .safe_lock(|a| a.declared_mining_job.1.clone())
+            .unwrap();
+        for transaction in job_transactions {
+            match transaction {
+                TransactionState::PresentInMempool(txid) => known_transactions.push(txid),
+                TransactionState::Missing => {
+                    continue;
+                }
+            }
+        }
+        known_transactions
+    }
 }
 
 pub fn signed_token(
@@ -409,9 +547,7 @@ pub fn signed_token(
     prv_key: &Secp256k1SecretKey,
 ) -> B0255<'static> {
     let secp = SignatureService::default();
-
     let signature = secp.sign(tx_hash_list_hash.to_vec(), prv_key.0);
-
     // Sign message
     signature.as_ref().to_vec().try_into().unwrap()
 }
@@ -419,131 +555,4 @@ pub fn signed_token(
 fn _get_random_token() -> B0255<'static> {
     let inner: [u8; 32] = rand::random();
     inner.to_vec().try_into().unwrap()
-}
-
-pub struct JobDeclarator {}
-
-impl JobDeclarator {
-    pub async fn start(
-        config: Configuration,
-        status_tx: crate::status::Sender,
-        mempool: Arc<Mutex<JDsMempool>>,
-        new_block_sender: Sender<String>,
-        sender_add_txs_to_mempool: Sender<AddTrasactionsToMempoolInner>,
-    ) {
-        let self_ = Arc::new(Mutex::new(Self {}));
-        info!("JD INITIALIZED");
-        Self::accept_incoming_connection(
-            self_,
-            config,
-            status_tx,
-            mempool,
-            new_block_sender,
-            sender_add_txs_to_mempool,
-        )
-        .await;
-    }
-    async fn accept_incoming_connection(
-        _self_: Arc<Mutex<JobDeclarator>>,
-        config: Configuration,
-        status_tx: crate::status::Sender,
-        mempool: Arc<Mutex<JDsMempool>>,
-        new_block_sender: Sender<String>,
-        sender_add_txs_to_mempool: Sender<AddTrasactionsToMempoolInner>,
-    ) {
-        let listener = TcpListener::bind(&config.listen_jd_address).await.unwrap();
-
-        while let Ok((stream, _)) = listener.accept().await {
-            let responder = Responder::from_authority_kp(
-                &config.authority_public_key.into_bytes(),
-                &config.authority_secret_key.into_bytes(),
-                std::time::Duration::from_secs(config.cert_validity_sec),
-            )
-            .unwrap();
-
-            let addr = stream.peer_addr();
-
-            if let Ok((receiver, sender, _, _)) =
-                Connection::new(stream, HandshakeRole::Responder(responder)).await
-            {
-                match receiver.recv().await {
-                    Ok(EitherFrame::Sv2(mut sv2_message)) => {
-                        debug!("Received SV2 message: {:?}", sv2_message);
-                        let payload = sv2_message.payload();
-
-                        if let Ok(setup_connection) =
-                            binary_sv2::from_bytes::<SetupConnection>(payload)
-                        {
-                            let flag = setup_connection.flags;
-                            let is_valid = SetupConnection::check_flags(
-                                Protocol::JobDeclarationProtocol,
-                                config.async_mining_allowed as u32,
-                                flag,
-                            );
-
-                            if is_valid {
-                                let success_message = SetupConnectionSuccess {
-                                    used_version: 2,
-                                    flags: (setup_connection.flags & 1u32),
-                                };
-                                info!("Sending success message for proxy");
-                                let sv2_frame: StdFrame = JdsMessages::Common(success_message.into())
-        .try_into()
-        .expect("Failed to convert setup connection response message to standard frame");
-
-                                sender.send(sv2_frame.into()).await.unwrap();
-
-                                let jddownstream = Arc::new(Mutex::new(
-                                    JobDeclaratorDownstream::new(
-                                        (setup_connection.flags & 1u32) != 0u32, /* this takes a
-                                                                                  * bool instead
-                                                                                  * of u32 */
-                                        receiver.clone(),
-                                        sender.clone(),
-                                        &config,
-                                        mempool.clone(),
-                                        sender_add_txs_to_mempool.clone(), /* each downstream has its own sender (multi producer single consumer) */
-                                    ),
-                                ));
-
-                                JobDeclaratorDownstream::start(
-                                    jddownstream,
-                                    status_tx.clone(),
-                                    new_block_sender.clone(),
-                                );
-                            } else {
-                                let error_message = SetupConnectionError {
-                                    flags: flag,
-                                    error_code: "unsupported-feature-flags"
-                                        .to_string()
-                                        .into_bytes()
-                                        .try_into()
-                                        .unwrap(),
-                                };
-                                info!("Sending error message for proxy");
-                                let sv2_frame: StdFrame = JdsMessages::Common(error_message.into())
-        .try_into()
-        .expect("Failed to convert setup connection response message to standard frame");
-
-                                sender.send(sv2_frame.into()).await.unwrap();
-                            }
-                        } else {
-                            error!("Error parsing SetupConnection message");
-                        }
-                    }
-                    Ok(EitherFrame::HandShake(handshake_message)) => {
-                        error!(
-                            "Unexpected handshake message from upstream: {:?} at {:?}",
-                            handshake_message, addr
-                        );
-                    }
-                    Err(e) => {
-                        error!("Error receiving message: {:?}", e);
-                    }
-                }
-            } else {
-                error!("Cannot connect to {:?}", addr);
-            }
-        }
-    }
 }

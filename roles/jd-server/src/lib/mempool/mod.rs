@@ -9,14 +9,18 @@ use rpc_sv2::{mini_rpc_client, mini_rpc_client::RpcError};
 use std::{convert::TryInto, str::FromStr, sync::Arc};
 use stratum_common::{bitcoin, bitcoin::hash_types::Txid};
 
-#[derive(Clone, Debug)]
-pub struct TransactionWithHash {
-    pub id: Txid,
-    pub tx: Option<(Transaction, u32)>,
-}
-
+/// Represents a mempool that is used to store transactions.
+///
+/// This is an internal mempool managed by Job Declarator Server.
+///
+/// Maintaing an internal mempool makes it faster to access the transactions
+/// and might help in reducing the number of RPC calls to the node.
 #[derive(Clone, Debug)]
 pub struct JDsMempool {
+    /// The mempool is a hashmap that stores the transactions with their txid as the key.
+    ///
+    /// The transactions are stored as an Option of a tuple of the transaction and the count. It is
+    /// optional because the full transaction might not be available yet.
     pub mempool: HashMap<Txid, Option<(Transaction, u32)>>,
     auth: mini_rpc_client::Auth,
     url: String,
@@ -24,25 +28,7 @@ pub struct JDsMempool {
 }
 
 impl JDsMempool {
-    pub fn get_client(&self) -> Option<mini_rpc_client::MiniRpcClient> {
-        let url = self.url.as_str();
-        if url.contains("http") {
-            let client = mini_rpc_client::MiniRpcClient::new(url.to_string(), self.auth.clone());
-            Some(client)
-        } else {
-            None
-        }
-    }
-
-    /// This function is used only for debug purposes and should not be used
-    /// in production code.
-    #[cfg(debug_assertions)]
-    pub fn _get_transaction_list(self_: Arc<Mutex<Self>>) -> Vec<Txid> {
-        let tx_list = self_.safe_lock(|x| x.mempool.clone()).unwrap();
-        let tx_list_: Vec<Txid> = tx_list.iter().map(|n| *n.0).collect();
-        tx_list_
-    }
-
+    /// Create a new mempool instance.
     pub fn new(
         url: String,
         username: String,
@@ -59,9 +45,26 @@ impl JDsMempool {
         }
     }
 
-    // this functions fill in the mempool the transactions with the given txid and insert the given
-    // transactions. The ids are for the transactions that are already known to the node, the
-    // unknown transactions are provided directly as a vector
+    /// Retrive RPC client the mempool is connected to.
+    pub fn get_client(&self) -> Option<mini_rpc_client::MiniRpcClient> {
+        let url = self.url.as_str();
+        if url.contains("http") {
+            let client = mini_rpc_client::MiniRpcClient::new(url.to_string(), self.auth.clone());
+            Some(client)
+        } else {
+            None
+        }
+    }
+
+    /// Checks if the rpc client is accessible.
+    pub async fn health(self_: Arc<Mutex<Self>>) -> Result<(), JdsMempoolError> {
+        let client = self_
+            .safe_lock(|a| a.get_client())?
+            .ok_or(JdsMempoolError::NoClient)?;
+        client.health().await.map_err(JdsMempoolError::Rpc)
+    }
+
+    /// Update the mempool with new transactions.
     pub async fn add_tx_data_to_mempool(
         self_: Arc<Mutex<Self>>,
         add_txs_to_mempool_inner: AddTrasactionsToMempoolInner,
@@ -115,6 +118,7 @@ impl JDsMempool {
         Ok(())
     }
 
+    /// Update the mempool based on the `get_raw_mempool` RPC call.
     pub async fn update_mempool(self_: Arc<Mutex<Self>>) -> Result<(), JdsMempoolError> {
         let client = self_
             .safe_lock(|x| x.get_client())?
@@ -147,6 +151,7 @@ impl JDsMempool {
         }
     }
 
+    /// Submit new block to bitcoind node through RPC call.
     pub async fn on_submit(self_: Arc<Mutex<Self>>) -> Result<(), JdsMempoolError> {
         let new_block_receiver: Receiver<String> =
             self_.safe_lock(|x| x.new_block_receiver.clone())?;
@@ -163,6 +168,7 @@ impl JDsMempool {
         Ok(())
     }
 
+    /// Should be deprecated.
     pub fn to_short_ids(&self, nonce: u64) -> Option<HashMap<[u8; 6], TransactionWithHash>> {
         let mut ret = HashMap::new();
         for tx in &self.mempool {
@@ -183,3 +189,11 @@ impl JDsMempool {
         Some(ret)
     }
 }
+
+/// Should be deprecated.
+#[derive(Clone, Debug)]
+pub struct TransactionWithHash {
+    pub id: Txid,
+    pub tx: Option<(Transaction, u32)>,
+}
+
