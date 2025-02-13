@@ -32,3 +32,29 @@ pub use errors::Error;
 pub use job_declaration_sv2;
 pub use mining_sv2;
 pub use template_distribution_sv2;
+
+pub use binary_sv2::Error as BinaryError;
+pub use binary_sv2::U256;
+pub use binary_sv2::B064K;
+pub use binary_sv2::B0255;
+pub use binary_sv2::Seq064K;
+pub use binary_sv2::B016M;
+pub use binary_sv2::Seq0255;
+pub use binary_sv2::ShortTxId;
+pub use binary_sv2::from_bytes as binary_sv2_from_bytes;
+
+pub use codec_sv2::Error as CodecError;
+pub use codec_sv2::framing_sv2::Error as FramingError;
+
+pub use codec_sv2::Initiator;
+pub use codec_sv2::Responder;
+pub use codec_sv2::HandshakeRole;
+pub use codec_sv2::noise_sv2::Error as NoiseError;
+pub use codec_sv2::buffer_sv2::Slice;
+
+pub use codec_sv2::StandardEitherFrame;
+pub use codec_sv2::StandardSv2Frame;
+pub use codec_sv2::Sv2Frame;
+
+pub use const_sv2::MESSAGE_TYPE_CHANNEL_ENDPOINT_CHANGED;
+
