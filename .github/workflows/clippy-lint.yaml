@@ -16,13 +16,13 @@ jobs:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
     steps:
-      - name: Check SEMVER
       - uses: actions/checkout@v2
       - uses: Swatinem/rust-cache@v1.2.0
       - uses: actions-rs/toolchain@v1
         with:
           toolchain: stable
           override: true
+      - name: Check SEMVER
         run: |
           ./scripts/semver-checks.sh
 
