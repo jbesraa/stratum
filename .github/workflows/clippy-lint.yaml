@@ -27,7 +27,6 @@ jobs:
       - name: Run Clippy on all workspaces
         run: |
           ./scripts/clippy-checks.sh
-
     steps:
       - uses: actions/checkout@v4
       - uses: actions-rs/toolchain@v1
@@ -38,3 +37,15 @@ jobs:
           components: rustfmt
       - name: Run fmt on all workspaces
         run: |
+          ./scripts/fmt-checks.sh
+    steps:
+      - name: Use stable toolchain
+        uses: actions/checkout@v4
+        with:
+          profile: minimal
+          toolchain: stable
+          override: true
+
+      - name: Roles Integration Tests
+        run: |
+         RUST_LOG=debug cargo test --manifest-path=roles/Cargo.toml --verbose --test '*' -- --nocapture
