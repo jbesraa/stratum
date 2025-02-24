@@ -13,7 +13,6 @@ use std::{
 };
 
 use binary_sv2::{Seq064K, ShortTxId, U256};
-use bitcoin::Block;
 use bitcoin::{
     blockdata::block::BlockHeader,
     hash_types::{BlockHash, TxMerkleNode},
@@ -24,7 +23,7 @@ use bitcoin::{
         uint::{Uint128, Uint256},
         BitArray,
     },
-    PublicKey, Script, Transaction, XOnlyPublicKey,
+    Block, PublicKey, Script, Transaction, XOnlyPublicKey,
 };
 use job_declaration_sv2::{DeclareMiningJob, SubmitSolutionJd};
 use siphasher::sip::SipHasher24;
