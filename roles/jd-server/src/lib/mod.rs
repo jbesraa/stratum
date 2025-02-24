@@ -6,19 +6,17 @@ pub mod status;
 
 use async_channel::{bounded, unbounded, Receiver, Sender};
 use codec_sv2::{StandardEitherFrame, StandardSv2Frame};
-use config::{CoinbaseOutput, Configuration};
+use config::JobDeclaratorServerConfig;
 use error::JdsError;
 use error_handling::handle_result;
 use job_declarator::JobDeclarator;
-use key_utils::{Secp256k1PublicKey, Secp256k1SecretKey};
 use mempool::error::JdsMempoolError;
-use roles_logic_sv2::utils::Mutex;
 use roles_logic_sv2::{
-    errors::Error, parsers::PoolMessages as JdsMessages, utils::CoinbaseOutput as CoinbaseOutput_,
+    errors::Error,
+    parsers::PoolMessages as JdsMessages,
+    utils::{CoinbaseOutput as CoinbaseOutput_, Mutex},
 };
-use serde::Deserialize;
-use std::{convert::TryInto, time::Duration};
-use std::{ops::Sub, sync::Arc};
+use std::{convert::TryInto, ops::Sub, sync::Arc};
 use stratum_common::{
     bitcoin::{Script, TxOut},
     url::is_valid_url,
@@ -32,11 +30,11 @@ pub type EitherFrame = StandardEitherFrame<Message>;
 
 #[derive(Debug, Clone)]
 pub struct JobDeclaratorServer {
-    config: Configuration,
+    config: JobDeclaratorServerConfig,
 }
 
 impl JobDeclaratorServer {
-    pub fn new(config: Configuration) -> Result<Self, Box<JdsError>> {
+    pub fn new(config: JobDeclaratorServerConfig) -> Result<Self, Box<JdsError>> {
         let url = config.core_rpc_url.clone() + ":" + &config.core_rpc_port.clone().to_string();
         if !is_valid_url(&url) {
             return Err(Box::new(JdsError::InvalidRPCUrl));
@@ -208,7 +206,7 @@ impl JobDeclaratorServer {
     }
 }
 
-pub fn get_coinbase_output(config: &Configuration) -> Result<Vec<TxOut>, Error> {
+pub fn get_coinbase_output(config: &JobDeclaratorServerConfig) -> Result<Vec<TxOut>, Error> {
     let mut result = Vec::new();
     for coinbase_output_pool in &config.coinbase_outputs {
         let coinbase_output: CoinbaseOutput_ = coinbase_output_pool.try_into()?;
@@ -224,59 +222,13 @@ pub fn get_coinbase_output(config: &Configuration) -> Result<Vec<TxOut>, Error> 
     }
 }
 
-#[derive(Debug, Deserialize, Clone)]
-pub struct CoreRpc {
-    url: String,
-    port: u16,
-    user: String,
-    pass: String,
-}
-
-impl CoreRpc {
-    pub fn new(url: String, port: u16, user: String, pass: String) -> Self {
-        Self {
-            url,
-            port,
-            user,
-            pass,
-        }
-    }
-}
-
-impl Configuration {
-    pub fn new(
-        listen_jd_address: String,
-        authority_public_key: Secp256k1PublicKey,
-        authority_secret_key: Secp256k1SecretKey,
-        cert_validity_sec: u64,
-        coinbase_outputs: Vec<CoinbaseOutput>,
-        core_rpc: CoreRpc,
-        mempool_update_interval: Duration,
-    ) -> Self {
-        Self {
-            async_mining_allowed: true,
-            listen_jd_address,
-            authority_public_key,
-            authority_secret_key,
-            cert_validity_sec,
-            coinbase_outputs,
-            core_rpc_url: core_rpc.url,
-            core_rpc_port: core_rpc.port,
-            core_rpc_user: core_rpc.user,
-            core_rpc_pass: core_rpc.pass,
-            mempool_update_interval,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    use super::*;
     use ext_config::{Config, File, FileFormat};
     use std::path::PathBuf;
 
-    use super::*;
-
-    fn load_config(path: &str) -> Configuration {
+    fn load_config(path: &str) -> JobDeclaratorServerConfig {
         let config_path = PathBuf::from(path);
         assert!(
             config_path.exists(),
@@ -342,7 +294,7 @@ mod tests {
 
     #[test]
     fn test_try_from_valid_input() {
-        let input = CoinbaseOutput::new(
+        let input = config::CoinbaseOutput::new(
             "P2PKH".to_string(),
             "036adc3bdf21e6f9a0f0fb0066bf517e5b7909ed1563d6958a10993849a7554075".to_string(),
         );
@@ -352,7 +304,7 @@ mod tests {
 
     #[test]
     fn test_try_from_invalid_input() {
-        let input = CoinbaseOutput::new(
+        let input = config::CoinbaseOutput::new(
             "INVALID".to_string(),
             "036adc3bdf21e6f9a0f0fb0066bf517e5b7909ed1563d6958a10993849a7554075".to_string(),
         );
