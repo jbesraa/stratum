@@ -13,24 +13,20 @@ use std::{
 };
 
 use binary_sv2::{Seq064K, ShortTxId, U256};
-use bitcoin::Block;
+use bitcoin::{
+    blockdata::block::BlockHeader,
+    hash_types::{BlockHash, TxMerkleNode},
+    hashes::{sha256, sha256d::Hash as DHash, Hash},
+    secp256k1::{All, Secp256k1},
+    util::{
+        psbt::serialize::Deserialize,
+        uint::{Uint128, Uint256},
+        BitArray,
+    },
+    Block, PublicKey, Script, Transaction, XOnlyPublicKey,
+};
 use job_declaration_sv2::{DeclareMiningJob, SubmitSolutionJd};
 use siphasher::sip::SipHasher24;
-use stratum_common::{
-    bitcoin,
-    bitcoin::{
-        blockdata::block::BlockHeader,
-        hash_types::{BlockHash, TxMerkleNode},
-        hashes::{sha256, sha256d::Hash as DHash, Hash},
-        secp256k1::{All, Secp256k1},
-        util::{
-            psbt::serialize::Deserialize,
-            uint::{Uint128, Uint256},
-            BitArray,
-        },
-        PublicKey, Script, Transaction, XOnlyPublicKey,
-    },
-};
 use tracing::error;
 
 use crate::errors::Error;
@@ -1035,7 +1031,7 @@ impl<'a> From<BlockCreator<'a>> for bitcoin::Block {
         let merkle_root = Hash::from_inner(merkle_root.try_into().unwrap());
 
         let prev_blockhash = u256_to_block_hash(message.prev_hash.into_static());
-        let header = stratum_common::bitcoin::blockdata::block::BlockHeader {
+        let header = bitcoin::blockdata::block::BlockHeader {
             version: message.version as i32,
             prev_blockhash,
             merkle_root,
@@ -1072,7 +1068,7 @@ mod tests {
 
     use std::num::ParseIntError;
 
-    use stratum_common::bitcoin;
+    use bitcoin;
 
     fn decode_hex(s: &str) -> Result<Vec<u8>, ParseIntError> {
         (0..s.len())
