@@ -1,32 +1,30 @@
+pub mod config;
 pub mod error;
 pub mod job_declarator;
 pub mod mempool;
 pub mod status;
 
 use async_channel::{bounded, unbounded, Receiver, Sender};
+use codec_sv2::{StandardEitherFrame, StandardSv2Frame};
+use config::{CoinbaseOutput, Configuration};
 use error::JdsError;
 use error_handling::handle_result;
 use job_declarator::JobDeclarator;
+use key_utils::{Secp256k1PublicKey, Secp256k1SecretKey};
 use mempool::error::JdsMempoolError;
 use roles_logic_sv2::utils::Mutex;
-use std::{ops::Sub, sync::Arc};
-use tokio::{select, task};
-use tracing::{error, info, warn};
-
-use codec_sv2::{StandardEitherFrame, StandardSv2Frame};
-use key_utils::{Secp256k1PublicKey, Secp256k1SecretKey};
 use roles_logic_sv2::{
     errors::Error, parsers::PoolMessages as JdsMessages, utils::CoinbaseOutput as CoinbaseOutput_,
 };
 use serde::Deserialize;
-use std::{
-    convert::{TryFrom, TryInto},
-    time::Duration,
-};
+use std::{convert::TryInto, time::Duration};
+use std::{ops::Sub, sync::Arc};
 use stratum_common::{
     bitcoin::{Script, TxOut},
     url::is_valid_url,
 };
+use tokio::{select, task};
+use tracing::{error, info, warn};
 
 pub type Message = JdsMessages<'static>;
 pub type StdFrame = StandardSv2Frame<Message>;
@@ -226,52 +224,6 @@ pub fn get_coinbase_output(config: &Configuration) -> Result<Vec<TxOut>, Error> 
     }
 }
 
-impl TryFrom<&CoinbaseOutput> for CoinbaseOutput_ {
-    type Error = Error;
-
-    fn try_from(pool_output: &CoinbaseOutput) -> Result<Self, Self::Error> {
-        match pool_output.output_script_type.as_str() {
-            "P2PK" | "P2PKH" | "P2WPKH" | "P2SH" | "P2WSH" | "P2TR" => Ok(CoinbaseOutput_ {
-                output_script_type: pool_output.clone().output_script_type,
-                output_script_value: pool_output.clone().output_script_value,
-            }),
-            _ => Err(Error::UnknownOutputScriptType),
-        }
-    }
-}
-
-#[derive(Debug, Deserialize, Clone)]
-pub struct CoinbaseOutput {
-    output_script_type: String,
-    output_script_value: String,
-}
-
-impl CoinbaseOutput {
-    pub fn new(output_script_type: String, output_script_value: String) -> Self {
-        Self {
-            output_script_type,
-            output_script_value,
-        }
-    }
-}
-
-#[derive(Debug, Deserialize, Clone)]
-pub struct Configuration {
-    #[serde(default = "default_true")]
-    pub async_mining_allowed: bool,
-    pub listen_jd_address: String,
-    pub authority_public_key: Secp256k1PublicKey,
-    pub authority_secret_key: Secp256k1SecretKey,
-    pub cert_validity_sec: u64,
-    pub coinbase_outputs: Vec<CoinbaseOutput>,
-    pub core_rpc_url: String,
-    pub core_rpc_port: u16,
-    pub core_rpc_user: String,
-    pub core_rpc_pass: String,
-    #[serde(deserialize_with = "duration_from_toml")]
-    pub mempool_update_interval: Duration,
-}
-
 #[derive(Debug, Deserialize, Clone)]
 pub struct CoreRpc {
     url: String,
@@ -317,38 +269,6 @@ impl Configuration {
     }
 }
 
-fn default_true() -> bool {
-    true
-}
-
-fn duration_from_toml<'de, D>(deserializer: D) -> Result<Duration, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    #[derive(Deserialize)]
-    struct Helper {
-        unit: String,
-        value: u64,
-    }
-
-    let helper = Helper::deserialize(deserializer)?;
-    match helper.unit.as_str() {
-        "seconds" => Ok(Duration::from_secs(helper.value)),
-        "secs" => Ok(Duration::from_secs(helper.value)),
-        "s" => Ok(Duration::from_secs(helper.value)),
-        "milliseconds" => Ok(Duration::from_millis(helper.value)),
-        "millis" => Ok(Duration::from_millis(helper.value)),
-        "ms" => Ok(Duration::from_millis(helper.value)),
-        "microseconds" => Ok(Duration::from_micros(helper.value)),
-        "micros" => Ok(Duration::from_micros(helper.value)),
-        "us" => Ok(Duration::from_micros(helper.value)),
-        "nanoseconds" => Ok(Duration::from_nanos(helper.value)),
-        "nanos" => Ok(Duration::from_nanos(helper.value)),
-        "ns" => Ok(Duration::from_nanos(helper.value)),
-        // ... add other units as needed
-        _ => Err(serde::de::Error::custom("Unsupported duration unit")),
-    }
-}
 #[cfg(test)]
 mod tests {
     use ext_config::{Config, File, FileFormat};
@@ -422,22 +342,20 @@ mod tests {
 
     #[test]
     fn test_try_from_valid_input() {
-        let input = CoinbaseOutput {
-            output_script_type: "P2PKH".to_string(),
-            output_script_value:
-                "036adc3bdf21e6f9a0f0fb0066bf517e5b7909ed1563d6958a10993849a7554075".to_string(),
-        };
+        let input = CoinbaseOutput::new(
+            "P2PKH".to_string(),
+            "036adc3bdf21e6f9a0f0fb0066bf517e5b7909ed1563d6958a10993849a7554075".to_string(),
+        );
         let result: Result<CoinbaseOutput_, _> = (&input).try_into();
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_try_from_invalid_input() {
-        let input = CoinbaseOutput {
-            output_script_type: "INVALID".to_string(),
-            output_script_value:
-                "036adc3bdf21e6f9a0f0fb0066bf517e5b7909ed1563d6958a10993849a7554075".to_string(),
-        };
+        let input = CoinbaseOutput::new(
+            "INVALID".to_string(),
+            "036adc3bdf21e6f9a0f0fb0066bf517e5b7909ed1563d6958a10993849a7554075".to_string(),
+        );
         let result: Result<CoinbaseOutput_, _> = (&input).try_into();
         assert!(matches!(result, Err(Error::UnknownOutputScriptType)));
     }
