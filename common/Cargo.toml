@@ -13,5 +13,5 @@ serde = { version = "1.0.89", default-features = false, features = ["derive", "a
 roles_logic_sv2 = { path = "../protocols/v2/roles-logic-sv2", optional = true }
 
 [features]
-default = ["serde"]
+default = []
 serde = ["dep:serde", "dep:roles_logic_sv2"]
