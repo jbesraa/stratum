@@ -112,7 +112,7 @@ pub async fn start_jdc(
     jds_address: SocketAddr,
 ) -> (JobDeclaratorClient, SocketAddr) {
     use jd_client::config::{
-        CoinbaseOutput, JobDeclaratorClientConfig, PoolConfig, ProtocolConfig, TPConfig, Upstream,
+        JobDeclaratorClientConfig, PoolConfig, ProtocolConfig, TPConfig, Upstream,
     };
     let jdc_address = get_available_address();
     let max_supported_version = 2;
@@ -128,7 +128,7 @@ pub async fn start_jdc(
     )
     .unwrap();
     let cert_validity_sec = 3600;
-    let coinbase_outputs = vec![CoinbaseOutput::new(
+    let coinbase_outputs = vec![stratum_common::coinbase_output::CoinbaseOutput::new(
         "P2WPKH".to_string(),
         "036adc3bdf21e6f9a0f0fb0066bf517e5b7909ed1563d6958a10993849a7554075".to_string(),
     )];
@@ -168,7 +168,7 @@ pub async fn start_jdc(
 }
 
 pub async fn start_jds(tp_rpc_connection: &ConnectParams) -> (JobDeclaratorServer, SocketAddr) {
-    use jd_server::config::{CoinbaseOutput, CoreRpc, JobDeclaratorServerConfig};
+    use jd_server::config::{CoreRpc, JobDeclaratorServerConfig};
     let authority_public_key = Secp256k1PublicKey::try_from(
         "9auqWEzQDVyd2oe1JVGFLMLHZtCo2FFqZwtKA5gd9xbuEu7PH72".to_string(),
     )
@@ -179,7 +179,7 @@ pub async fn start_jds(tp_rpc_connection: &ConnectParams) -> (JobDeclaratorServe
     .unwrap();
     let listen_jd_address = get_available_address();
     let cert_validity_sec = 3600;
-    let coinbase_outputs = vec![CoinbaseOutput::new(
+    let coinbase_outputs = vec![stratum_common::coinbase_output::CoinbaseOutput::new(
         "P2WPKH".to_string(),
         "036adc3bdf21e6f9a0f0fb0066bf517e5b7909ed1563d6958a10993849a7554075".to_string(),
     )];
