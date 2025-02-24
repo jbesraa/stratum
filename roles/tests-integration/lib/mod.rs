@@ -112,7 +112,7 @@ pub async fn start_jdc(
     jds_address: SocketAddr,
 ) -> (JobDeclaratorClient, SocketAddr) {
     use jd_client::proxy_config::{
-        CoinbaseOutput, PoolConfig, ProtocolConfig, ProxyConfig, TPConfig, Upstream,
+        CoinbaseOutput, JobDeclaratorClientConfig, PoolConfig, ProtocolConfig, TPConfig, Upstream,
     };
     let jdc_address = get_available_address();
     let max_supported_version = 2;
@@ -151,7 +151,7 @@ pub async fn start_jdc(
         min_extranonce2_size,
         coinbase_outputs,
     );
-    let jd_client_proxy = ProxyConfig::new(
+    let jd_client_proxy = JobDeclaratorClientConfig::new(
         jdc_address,
         protocol_config,
         withhold,
@@ -168,7 +168,7 @@ pub async fn start_jdc(
 }
 
 pub async fn start_jds(tp_rpc_connection: &ConnectParams) -> (JobDeclaratorServer, SocketAddr) {
-    use jd_server::{CoinbaseOutput, Configuration, CoreRpc};
+    use jd_server::config::{CoinbaseOutput, CoreRpc, JobDeclaratorServerConfig};
     let authority_public_key = Secp256k1PublicKey::try_from(
         "9auqWEzQDVyd2oe1JVGFLMLHZtCo2FFqZwtKA5gd9xbuEu7PH72".to_string(),
     )
@@ -190,7 +190,7 @@ pub async fn start_jds(tp_rpc_connection: &ConnectParams) -> (JobDeclaratorServe
             user,
             password,
         );
-        let config = Configuration::new(
+        let config = JobDeclaratorServerConfig::new(
             listen_jd_address.to_string(),
             authority_public_key,
             authority_secret_key,
@@ -297,9 +297,9 @@ pub fn measure_hashrate(duration_secs: u64) -> f64 {
     hashes as f64 / elapsed_secs
 }
 
-pub async fn start_mining_device_sv1(upstream_addr: SocketAddr) {
+pub async fn start_mining_device_sv1(upstream_addr: SocketAddr, single_submit: bool) {
     tokio::spawn(async move {
-        mining_device_sv1::client::Client::connect(80, upstream_addr).await;
+        mining_device_sv1::client::Client::connect(80, upstream_addr, single_submit).await;
     });
     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
 }
