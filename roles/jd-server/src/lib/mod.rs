@@ -294,7 +294,7 @@ mod tests {
 
     #[test]
     fn test_try_from_valid_input() {
-        let input = config::CoinbaseOutput::new(
+        let input = stratum_common::coinbase_output::CoinbaseOutput::new(
             "P2PKH".to_string(),
             "036adc3bdf21e6f9a0f0fb0066bf517e5b7909ed1563d6958a10993849a7554075".to_string(),
         );
@@ -304,7 +304,7 @@ mod tests {
 
     #[test]
     fn test_try_from_invalid_input() {
-        let input = config::CoinbaseOutput::new(
+        let input = stratum_common::coinbase_output::CoinbaseOutput::new(
             "INVALID".to_string(),
             "036adc3bdf21e6f9a0f0fb0066bf517e5b7909ed1563d6958a10993849a7554075".to_string(),
         );
