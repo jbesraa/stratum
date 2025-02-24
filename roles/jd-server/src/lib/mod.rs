@@ -5,7 +5,7 @@ pub mod mempool;
 pub mod status;
 use async_channel::{bounded, unbounded, Receiver, Sender};
 use codec_sv2::{StandardEitherFrame, StandardSv2Frame};
-use config::Configuration;
+use config::JobDeclaratorServerConfig;
 use error::JdsError;
 use error_handling::handle_result;
 use job_declarator::JobDeclarator;
@@ -22,11 +22,11 @@ pub type EitherFrame = StandardEitherFrame<Message>;
 
 #[derive(Debug, Clone)]
 pub struct JobDeclaratorServer {
-    config: Configuration,
+    config: JobDeclaratorServerConfig,
 }
 
 impl JobDeclaratorServer {
-    pub fn new(config: Configuration) -> Result<Self, Box<JdsError>> {
+    pub fn new(config: JobDeclaratorServerConfig) -> Result<Self, Box<JdsError>> {
         let url = config.core_rpc_url.clone() + ":" + &config.core_rpc_port.clone().to_string();
         if !is_valid_url(&url) {
             return Err(Box::new(JdsError::InvalidRPCUrl));
@@ -200,15 +200,14 @@ impl JobDeclaratorServer {
 
 #[cfg(test)]
 mod tests {
-    use config::{get_coinbase_output, CoinbaseOutput};
     use ext_config::{Config, File, FileFormat};
     use roles_logic_sv2::utils::CoinbaseOutput as CoinbaseOutput_;
     use std::{convert::TryInto, path::PathBuf};
     use stratum_common::bitcoin::{Amount, ScriptBuf, TxOut};
 
-    use super::*;
+    use crate::config::{self, get_coinbase_output, JobDeclaratorServerConfig};
 
-    fn load_config(path: &str) -> Configuration {
+    fn load_config(path: &str) -> JobDeclaratorServerConfig {
         let config_path = PathBuf::from(path);
         assert!(
             config_path.exists(),
@@ -230,14 +229,14 @@ mod tests {
     async fn test_invalid_rpc_url() {
         let mut config = load_config("config-examples/jds-config-hosted-example.toml");
         config.core_rpc_url = "invalid".to_string();
-        assert!(JobDeclaratorServer::new(config).is_err());
+        assert!(super::JobDeclaratorServer::new(config).is_err());
     }
 
     #[tokio::test]
     async fn test_offline_rpc_url() {
         let mut config = load_config("config-examples/jds-config-hosted-example.toml");
         config.core_rpc_url = "http://127.0.0.1".to_string();
-        let jd = JobDeclaratorServer::new(config).unwrap();
+        let jd = super::JobDeclaratorServer::new(config).unwrap();
         assert!(jd.start().await.is_err());
     }
 
@@ -274,7 +273,7 @@ mod tests {
 
     #[test]
     fn test_try_from_valid_input() {
-        let input = CoinbaseOutput::new(
+        let input = config::CoinbaseOutput::new(
             "P2PKH".to_string(),
             "036adc3bdf21e6f9a0f0fb0066bf517e5b7909ed1563d6958a10993849a7554075".to_string(),
         );
@@ -284,7 +283,7 @@ mod tests {
 
     #[test]
     fn test_try_from_invalid_input() {
-        let input = CoinbaseOutput::new(
+        let input = config::CoinbaseOutput::new(
             "INVALID".to_string(),
             "036adc3bdf21e6f9a0f0fb0066bf517e5b7909ed1563d6958a10993849a7554075".to_string(),
         );
