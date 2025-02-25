@@ -24,7 +24,6 @@ pub struct JobDeclaratorClientConfig {
     #[serde(deserialize_with = "stratum_common::toml::duration_from_toml")]
     timeout: Duration,
     coinbase_outputs: Vec<CoinbaseOutput>,
-    test_only_do_not_send_solution_to_tp: Option<bool>,
 }
 
 impl JobDeclaratorClientConfig {
@@ -53,7 +52,6 @@ impl JobDeclaratorClientConfig {
             upstreams,
             timeout,
             coinbase_outputs: protocol_config.coinbase_outputs,
-            test_only_do_not_send_solution_to_tp: None,
         }
     }
 
@@ -99,10 +97,6 @@ impl JobDeclaratorClientConfig {
 
     pub fn tp_authority_public_key(&self) -> Option<&Secp256k1PublicKey> {
         self.tp_authority_public_key.as_ref()
-    }
-
-    pub fn test_only_do_not_send_solution_to_tp(&self) -> Option<bool> {
-        self.test_only_do_not_send_solution_to_tp
     }
 
     pub fn min_supported_version(&self) -> u16 {
