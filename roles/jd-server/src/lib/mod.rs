@@ -35,7 +35,7 @@ pub struct JobDeclaratorServer {
 
 impl JobDeclaratorServer {
     pub fn new(config: JobDeclaratorServerConfig) -> Result<Self, Box<JdsError>> {
-        let url = config.core_rpc_url.clone() + ":" + &config.core_rpc_port.clone().to_string();
+        let url = config.core_rpc_url().to_string() + ":" + &config.core_rpc_port().to_string();
         if !is_valid_url(&url) {
             return Err(Box::new(JdsError::InvalidRPCUrl));
         }
@@ -43,19 +43,19 @@ impl JobDeclaratorServer {
     }
     pub async fn start(&self) -> Result<(), JdsError> {
         let config = self.config.clone();
-        let url = config.core_rpc_url.clone() + ":" + &config.core_rpc_port.clone().to_string();
-        let username = config.core_rpc_user.clone();
-        let password = config.core_rpc_pass.clone();
+        let url = config.core_rpc_url().to_string() + ":" + &config.core_rpc_port().to_string();
+        let username = config.core_rpc_user();
+        let password = config.core_rpc_pass();
         // TODO should we manage what to do when the limit is reaced?
         let (new_block_sender, new_block_receiver): (Sender<String>, Receiver<String>) =
             bounded(10);
         let mempool = Arc::new(Mutex::new(mempool::JDsMempool::new(
             url.clone(),
-            username,
-            password,
+            username.to_string(),
+            password.to_string(),
             new_block_receiver,
         )));
-        let mempool_update_interval = config.mempool_update_interval;
+        let mempool_update_interval = config.mempool_update_interval();
         let mempool_cloned_ = mempool.clone();
         let mempool_cloned_1 = mempool.clone();
         if let Err(e) = mempool::JDsMempool::health(mempool_cloned_1.clone()).await {
@@ -208,7 +208,7 @@ impl JobDeclaratorServer {
 
 pub fn get_coinbase_output(config: &JobDeclaratorServerConfig) -> Result<Vec<TxOut>, Error> {
     let mut result = Vec::new();
-    for coinbase_output_pool in &config.coinbase_outputs {
+    for coinbase_output_pool in config.coinbase_outputs() {
         let coinbase_output: CoinbaseOutput_ = coinbase_output_pool.try_into()?;
         let output_script: Script = coinbase_output.try_into()?;
         result.push(TxOut {
@@ -249,14 +249,14 @@ mod tests {
     #[tokio::test]
     async fn test_invalid_rpc_url() {
         let mut config = load_config("config-examples/jds-config-hosted-example.toml");
-        config.core_rpc_url = "invalid".to_string();
+        config.set_core_rpc_url("invalid".to_string());
         assert!(JobDeclaratorServer::new(config).is_err());
     }
 
     #[tokio::test]
     async fn test_offline_rpc_url() {
         let mut config = load_config("config-examples/jds-config-hosted-example.toml");
-        config.core_rpc_url = "http://127.0.0.1".to_string();
+        config.set_core_rpc_url("http://127.0.0.1".to_string());
         let jd = JobDeclaratorServer::new(config).unwrap();
         assert!(jd.start().await.is_err());
     }
@@ -283,7 +283,7 @@ mod tests {
     #[test]
     fn test_get_coinbase_output_empty() {
         let mut config = load_config("config-examples/jds-config-hosted-example.toml");
-        config.coinbase_outputs.clear();
+        config.set_coinbase_outputs(Vec::new());
 
         let result = get_coinbase_output(&config);
         assert!(

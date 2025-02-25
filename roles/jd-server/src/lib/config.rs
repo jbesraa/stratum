@@ -6,18 +6,18 @@ use stratum_common::coinbase_output::CoinbaseOutput;
 #[derive(Debug, serde::Deserialize, Clone)]
 pub struct JobDeclaratorServerConfig {
     #[serde(default = "default_true")]
-    pub async_mining_allowed: bool,
-    pub listen_jd_address: String,
-    pub authority_public_key: Secp256k1PublicKey,
-    pub authority_secret_key: Secp256k1SecretKey,
-    pub cert_validity_sec: u64,
-    pub coinbase_outputs: Vec<CoinbaseOutput>,
-    pub core_rpc_url: String,
-    pub core_rpc_port: u16,
-    pub core_rpc_user: String,
-    pub core_rpc_pass: String,
+    async_mining_allowed: bool,
+    listen_jd_address: String,
+    authority_public_key: Secp256k1PublicKey,
+    authority_secret_key: Secp256k1SecretKey,
+    cert_validity_sec: u64,
+    coinbase_outputs: Vec<CoinbaseOutput>,
+    core_rpc_url: String,
+    core_rpc_port: u16,
+    core_rpc_user: String,
+    core_rpc_pass: String,
     #[serde(deserialize_with = "stratum_common::toml::duration_from_toml")]
-    pub mempool_update_interval: Duration,
+    mempool_update_interval: Duration,
 }
 
 impl JobDeclaratorServerConfig {
@@ -43,6 +43,58 @@ impl JobDeclaratorServerConfig {
             core_rpc_pass: core_rpc.pass,
             mempool_update_interval,
         }
+    }
+
+    pub fn listen_jd_address(&self) -> &str {
+        &self.listen_jd_address
+    }
+
+    pub fn authority_public_key(&self) -> &Secp256k1PublicKey {
+        &self.authority_public_key
+    }
+
+    pub fn authority_secret_key(&self) -> &Secp256k1SecretKey {
+        &self.authority_secret_key
+    }
+
+    pub fn core_rpc_url(&self) -> &str {
+        &self.core_rpc_url
+    }
+
+    pub fn core_rpc_port(&self) -> u16 {
+        self.core_rpc_port
+    }
+
+    pub fn core_rpc_user(&self) -> &str {
+        &self.core_rpc_user
+    }
+
+    pub fn core_rpc_pass(&self) -> &str {
+        &self.core_rpc_pass
+    }
+
+    pub fn coinbase_outputs(&self) -> &Vec<CoinbaseOutput> {
+        &self.coinbase_outputs
+    }
+
+    pub fn cert_validity_sec(&self) -> u64 {
+        self.cert_validity_sec
+    }
+
+    pub fn async_mining_allowed(&self) -> bool {
+        self.async_mining_allowed
+    }
+
+    pub fn mempool_update_interval(&self) -> Duration {
+        self.mempool_update_interval
+    }
+
+    pub fn set_core_rpc_url(&mut self, url: String) {
+        self.core_rpc_url = url;
+    }
+
+    pub fn set_coinbase_outputs(&mut self, outputs: Vec<CoinbaseOutput>) {
+        self.coinbase_outputs = outputs;
     }
 }
 
