@@ -1,5 +1,7 @@
 pub mod message_handler;
-use super::{error::JdsError, mempool::JDsMempool, status, Configuration, EitherFrame, StdFrame};
+use super::{
+    error::JdsError, mempool::JDsMempool, status, EitherFrame, JobDeclaratorServerConfig, StdFrame,
+};
 use async_channel::{Receiver, Sender};
 use binary_sv2::{B0255, U256};
 use codec_sv2::{HandshakeRole, Responder};
@@ -74,7 +76,7 @@ impl JobDeclaratorDownstream {
         async_mining_allowed: bool,
         receiver: Receiver<EitherFrame>,
         sender: Sender<EitherFrame>,
-        config: &Configuration,
+        config: &JobDeclaratorServerConfig,
         mempool: Arc<Mutex<JDsMempool>>,
         sender_add_txs_to_mempool: Sender<AddTrasactionsToMempoolInner>,
     ) -> Self {
@@ -97,8 +99,8 @@ impl JobDeclaratorDownstream {
             coinbase_output,
             token_to_job_map,
             tokens,
-            public_key: config.authority_public_key,
-            private_key: config.authority_secret_key,
+            public_key: config.authority_public_key().clone(),
+            private_key: config.authority_secret_key().clone(),
             mempool,
             declared_mining_job: (None, Vec::new(), Vec::new()),
             tx_hash_list_hash: None,
@@ -425,7 +427,7 @@ pub struct JobDeclarator {}
 
 impl JobDeclarator {
     pub async fn start(
-        config: Configuration,
+        config: JobDeclaratorServerConfig,
         status_tx: crate::status::Sender,
         mempool: Arc<Mutex<JDsMempool>>,
         new_block_sender: Sender<String>,
@@ -445,19 +447,19 @@ impl JobDeclarator {
     }
     async fn accept_incoming_connection(
         _self_: Arc<Mutex<JobDeclarator>>,
-        config: Configuration,
+        config: JobDeclaratorServerConfig,
         status_tx: crate::status::Sender,
         mempool: Arc<Mutex<JDsMempool>>,
         new_block_sender: Sender<String>,
         sender_add_txs_to_mempool: Sender<AddTrasactionsToMempoolInner>,
     ) {
-        let listener = TcpListener::bind(&config.listen_jd_address).await.unwrap();
+        let listener = TcpListener::bind(config.listen_jd_address()).await.unwrap();
 
         while let Ok((stream, _)) = listener.accept().await {
             let responder = Responder::from_authority_kp(
-                &config.authority_public_key.into_bytes(),
-                &config.authority_secret_key.into_bytes(),
-                std::time::Duration::from_secs(config.cert_validity_sec),
+                &config.authority_public_key().into_bytes(),
+                &config.authority_secret_key().into_bytes(),
+                std::time::Duration::from_secs(config.cert_validity_sec()),
             )
             .unwrap();
 
@@ -477,7 +479,7 @@ impl JobDeclarator {
                             let flag = setup_connection.flags;
                             let is_valid = SetupConnection::check_flags(
                                 Protocol::JobDeclarationProtocol,
-                                config.async_mining_allowed as u32,
+                                config.async_mining_allowed() as u32,
                                 flag,
                             );
 

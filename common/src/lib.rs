@@ -5,4 +5,9 @@
 #[cfg(feature = "bitcoin")]
 pub use bitcoin;
 pub use secp256k1;
+pub mod coinbase_output;
+
+#[cfg(feature = "serde")]
+pub mod toml;
+#[cfg(feature = "serde")]
 pub mod url;

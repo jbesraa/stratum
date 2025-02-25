@@ -18,7 +18,7 @@ use mining_sv2::{
 use nohash_hasher::BuildNoHashHasher;
 use std::{collections::HashMap, convert::TryInto, sync::Arc};
 
-use stratum_common::bitcoin::hashes::{sha256d, Hash, HashEngine};
+use bitcoin::hashes::{sha256d, Hash, HashEngine};
 
 /// Used to convert an extended mining job to a standard mining job. The `extranonce` field must
 /// be exactly 32 bytes.

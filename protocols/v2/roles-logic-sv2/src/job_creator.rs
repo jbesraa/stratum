@@ -10,16 +10,13 @@ use std::{collections::HashMap, convert::TryInto};
 use template_distribution_sv2::{NewTemplate, SetNewPrevHash};
 use tracing::debug;
 
-use stratum_common::{
-    bitcoin,
-    bitcoin::{
-        blockdata::{
-            transaction::{OutPoint, Transaction, TxIn, TxOut},
-            witness::Witness,
-        },
-        consensus::Decodable,
-        util::psbt::serialize::{Deserialize, Serialize},
+use bitcoin::{
+    blockdata::{
+        transaction::{OutPoint, Transaction, TxIn, TxOut},
+        witness::Witness,
     },
+    consensus::Decodable,
+    util::psbt::serialize::{Deserialize, Serialize},
 };
 
 #[derive(Debug)]

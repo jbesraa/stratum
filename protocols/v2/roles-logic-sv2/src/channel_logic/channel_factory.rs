@@ -24,13 +24,10 @@ use template_distribution_sv2::{NewTemplate, SetNewPrevHash as SetNewPrevHashFro
 
 use tracing::{debug, error, info, trace, warn};
 
-use stratum_common::{
-    bitcoin,
-    bitcoin::{
-        hash_types,
-        hashes::{hex::ToHex, sha256d::Hash, Hash as Hash_},
-        TxOut,
-    },
+use bitcoin::{
+    hash_types,
+    hashes::{hex::ToHex, sha256d::Hash, Hash as Hash_},
+    TxOut,
 };
 
 /// A stripped type of `SetCustomMiningJob` without the (`channel_id, `request_id` and `token`)
