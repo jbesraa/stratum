@@ -2,13 +2,13 @@
 use key_utils::{Secp256k1PublicKey, Secp256k1SecretKey};
 use roles_logic_sv2::{errors::Error, utils::CoinbaseOutput as CoinbaseOutput_};
 use serde::Deserialize;
-use std::time::Duration;
+use std::{net::SocketAddr, time::Duration};
 use stratum_common::{bitcoin::TxOut, coinbase_output::CoinbaseOutput};
 
+/// Represents the configuration of a job declarator client.
 #[derive(Debug, Deserialize, Clone)]
 pub struct JobDeclaratorClientConfig {
-    downstream_address: String,
-    downstream_port: u16,
+    listening_address: SocketAddr,
     max_supported_version: u16,
     min_supported_version: u16,
     min_extranonce2_size: u16,
@@ -26,7 +26,7 @@ pub struct JobDeclaratorClientConfig {
 
 impl JobDeclaratorClientConfig {
     pub fn new(
-        listening_address: std::net::SocketAddr,
+        listening_address: SocketAddr,
         protocol_config: ProtocolConfig,
         withhold: bool,
         pool_config: PoolConfig,
@@ -35,8 +35,7 @@ impl JobDeclaratorClientConfig {
         timeout: Duration,
     ) -> Self {
         Self {
-            downstream_address: listening_address.ip().to_string(),
-            downstream_port: listening_address.port(),
+            listening_address,
             max_supported_version: protocol_config.max_supported_version,
             min_supported_version: protocol_config.min_supported_version,
             min_extranonce2_size: protocol_config.min_extranonce2_size,
@@ -52,12 +51,8 @@ impl JobDeclaratorClientConfig {
         }
     }
 
-    pub fn downstream_address(&self) -> &str {
-        &self.downstream_address
-    }
-
-    pub fn downstream_port(&self) -> u16 {
-        self.downstream_port
+    pub fn listening_address(&self) -> &SocketAddr {
+        &self.listening_address
     }
 
     pub fn min_extranonce2_size(&self) -> u16 {
