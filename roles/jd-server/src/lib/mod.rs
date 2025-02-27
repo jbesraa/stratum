@@ -205,7 +205,7 @@ mod tests {
     use std::{convert::TryInto, path::PathBuf};
     use stratum_common::bitcoin::{Amount, ScriptBuf, TxOut};
 
-    use crate::config::{self, get_coinbase_output, JobDeclaratorServerConfig};
+    use crate::config::JobDeclaratorServerConfig;
 
     fn load_config(path: &str) -> JobDeclaratorServerConfig {
         let config_path = PathBuf::from(path);
@@ -243,7 +243,7 @@ mod tests {
     #[test]
     fn test_get_coinbase_output_non_empty() {
         let config = load_config("config-examples/jds-config-hosted-example.toml");
-        let outputs = get_coinbase_output(&config).expect("Failed to get coinbase output");
+        let outputs = config.get_txout().expect("Failed to get coinbase output");
 
         let expected_output = CoinbaseOutput_ {
             output_script_type: "P2WPKH".to_string(),
@@ -264,7 +264,7 @@ mod tests {
         let mut config = load_config("config-examples/jds-config-hosted-example.toml");
         config.set_coinbase_outputs(Vec::new());
 
-        let result = get_coinbase_output(&config);
+        let result = &config.get_txout();
         assert!(
             matches!(result, Err(roles_logic_sv2::Error::EmptyCoinbaseOutputs)),
             "Expected an error for empty coinbase outputs"
@@ -273,7 +273,7 @@ mod tests {
 
     #[test]
     fn test_try_from_valid_input() {
-        let input = config::CoinbaseOutput::new(
+        let input = config_helpers::CoinbaseOutput::new(
             "P2PKH".to_string(),
             "036adc3bdf21e6f9a0f0fb0066bf517e5b7909ed1563d6958a10993849a7554075".to_string(),
         );
@@ -283,7 +283,7 @@ mod tests {
 
     #[test]
     fn test_try_from_invalid_input() {
-        let input = config::CoinbaseOutput::new(
+        let input = config_helpers::CoinbaseOutput::new(
             "INVALID".to_string(),
             "036adc3bdf21e6f9a0f0fb0066bf517e5b7909ed1563d6958a10993849a7554075".to_string(),
         );
