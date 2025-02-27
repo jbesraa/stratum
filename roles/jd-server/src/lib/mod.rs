@@ -17,14 +17,12 @@ use roles_logic_sv2::{
 use serde::Deserialize;
 use std::{
     convert::{TryFrom, TryInto},
+    net::SocketAddrV4,
     ops::Sub,
     sync::Arc,
     time::Duration,
 };
-use stratum_common::{
-    bitcoin::{Amount, ScriptBuf, TxOut},
-    url::is_valid_url,
-};
+use stratum_common::bitcoin::{Amount, ScriptBuf, TxOut};
 use tokio::{select, task};
 use tracing::{error, info, warn};
 
@@ -38,23 +36,18 @@ pub struct JobDeclaratorServer {
 }
 
 impl JobDeclaratorServer {
-    pub fn new(config: Configuration) -> Result<Self, Box<JdsError>> {
-        let url = config.core_rpc_url.clone() + ":" + &config.core_rpc_port.clone().to_string();
-        if !is_valid_url(&url) {
-            return Err(Box::new(JdsError::InvalidRPCUrl));
-        }
-        Ok(Self { config })
+    pub fn new(config: Configuration) -> Self {
+        Self { config }
     }
     pub async fn start(&self) -> Result<(), JdsError> {
         let config = self.config.clone();
-        let url = config.core_rpc_url.clone() + ":" + &config.core_rpc_port.clone().to_string();
         let username = config.core_rpc_user.clone();
         let password = config.core_rpc_pass.clone();
         // TODO should we manage what to do when the limit is reaced?
         let (new_block_sender, new_block_receiver): (Sender<String>, Receiver<String>) =
             bounded(10);
         let mempool = Arc::new(Mutex::new(mempool::JDsMempool::new(
-            url.clone(),
+            config.core_rpc_url.clone(),
             username,
             password,
             new_block_receiver,
@@ -264,8 +257,7 @@ pub struct Configuration {
     pub authority_secret_key: Secp256k1SecretKey,
     pub cert_validity_sec: u64,
     pub coinbase_outputs: Vec<CoinbaseOutput>,
-    pub core_rpc_url: String,
-    pub core_rpc_port: u16,
+    pub core_rpc_url: SocketAddrV4,
     pub core_rpc_user: String,
     pub core_rpc_pass: String,
     #[serde(deserialize_with = "duration_from_toml")]
@@ -274,20 +266,14 @@ pub struct Configuration {
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct CoreRpc {
-    url: String,
-    port: u16,
+    url: SocketAddrV4,
     user: String,
     pass: String,
 }
 
 impl CoreRpc {
-    pub fn new(url: String, port: u16, user: String, pass: String) -> Self {
-        Self {
-            url,
-            port,
-            user,
-            pass,
-        }
+    pub fn new(url: SocketAddrV4, user: String, pass: String) -> Self {
+        Self { url, user, pass }
     }
 }
 
@@ -309,7 +295,6 @@ impl Configuration {
             cert_validity_sec,
             coinbase_outputs,
             core_rpc_url: core_rpc.url,
-            core_rpc_port: core_rpc.port,
             core_rpc_user: core_rpc.user,
             core_rpc_pass: core_rpc.pass,
             mempool_update_interval,
@@ -352,7 +337,7 @@ where
 #[cfg(test)]
 mod tests {
     use ext_config::{Config, File, FileFormat};
-    use std::path::PathBuf;
+    use std::{path::PathBuf, str::FromStr};
 
     use super::*;
 
@@ -375,17 +360,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_invalid_rpc_url() {
-        let mut config = load_config("config-examples/jds-config-hosted-example.toml");
-        config.core_rpc_url = "invalid".to_string();
-        assert!(JobDeclaratorServer::new(config).is_err());
-    }
-
-    #[tokio::test]
     async fn test_offline_rpc_url() {
         let mut config = load_config("config-examples/jds-config-hosted-example.toml");
-        config.core_rpc_url = "http://127.0.0.1".to_string();
-        let jd = JobDeclaratorServer::new(config).unwrap();
+        config.core_rpc_url = SocketAddrV4::from_str("127.0.0.1:01010").unwrap();
+        let jd = JobDeclaratorServer::new(config);
         assert!(jd.start().await.is_err());
     }
 

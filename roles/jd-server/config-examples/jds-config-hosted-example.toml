@@ -8,7 +8,7 @@ cert_validity_sec = 3600
 
 # List of coinbase outputs used to build the coinbase tx
 # ! Right now only one output is supported, so comment all the ones you don't need !
-# For P2PK, P2PKH, P2WPKH, P2TR a public key is needed. For P2SH and P2WSH, a redeem script is needed.  
+# For P2PK, P2PKH, P2WPKH, P2TR a public key is needed. For P2SH and P2WSH, a redeem script is needed.
 coinbase_outputs = [
     #{ output_script_type = "P2PK", output_script_value = "0372c47307e5b75ce365daf835f226d246c5a7a92fe24395018d5552123354f086" },
     #{ output_script_type = "P2PKH", output_script_value = "0372c47307e5b75ce365daf835f226d246c5a7a92fe24395018d5552123354f086" },
@@ -21,11 +21,10 @@ coinbase_outputs = [
 # SRI Pool JD config
 listen_jd_address = "0.0.0.0:34264"
 # RPC config for mempool (it can be also the same TP if correctly configured)
-core_rpc_url =  "http://75.119.150.111"
-core_rpc_port = 48332
+core_rpc_url =  "75.119.150.111:48332"
 core_rpc_user =  "username"
 core_rpc_pass =  "password"
-# Time interval used for JDS mempool update 
+# Time interval used for JDS mempool update
 [mempool_update_interval]
 unit = "secs"
 value = 1
