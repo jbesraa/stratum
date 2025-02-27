@@ -6,7 +6,7 @@ use bitcoin::blockdata::transaction::Transaction;
 use hashbrown::HashMap;
 use roles_logic_sv2::utils::Mutex;
 use rpc_sv2::{mini_rpc_client, mini_rpc_client::RpcError};
-use std::{convert::TryInto, str::FromStr, sync::Arc};
+use std::{convert::TryInto, net::SocketAddrV4, str::FromStr, sync::Arc};
 use stratum_common::{bitcoin, bitcoin::hash_types::Txid};
 
 #[derive(Clone, Debug)]
@@ -19,19 +19,16 @@ pub struct TransactionWithHash {
 pub struct JDsMempool {
     pub mempool: HashMap<Txid, Option<(Transaction, u32)>>,
     auth: mini_rpc_client::Auth,
-    url: String,
+    url: SocketAddrV4,
     new_block_receiver: Receiver<String>,
 }
 
 impl JDsMempool {
     pub fn get_client(&self) -> Option<mini_rpc_client::MiniRpcClient> {
-        let url = self.url.as_str();
-        if url.contains("http") {
-            let client = mini_rpc_client::MiniRpcClient::new(url.to_string(), self.auth.clone());
-            Some(client)
-        } else {
-            None
-        }
+        let url = self.url.to_string();
+        let url = format!("http://{}", url);
+        let client = mini_rpc_client::MiniRpcClient::new(url.to_string(), self.auth.clone());
+        Some(client)
     }
 
     /// This function is used only for debug purposes and should not be used
@@ -44,7 +41,7 @@ impl JDsMempool {
     }
 
     pub fn new(
-        url: String,
+        url: SocketAddrV4,
         username: String,
         password: String,
         new_block_receiver: Receiver<String>,
