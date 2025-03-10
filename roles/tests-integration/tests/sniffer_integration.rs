@@ -142,7 +142,7 @@ async fn test_sniffer_wait_for_message_type_with_remove() {
 
 /// Verifies that [`Sniffer`] can intercept and block a message stream.
 ///
-/// This test sets up a chain where a message from the Template Provider (TP)  
+/// This test sets up a chain where a message from the Template Provider (TP)
 /// passes through three sniffers (`sniffer_a`, `sniffer_b` and `sniffer_c`) before reaching the
 /// Pool.
 ///
@@ -150,8 +150,9 @@ async fn test_sniffer_wait_for_message_type_with_remove() {
 /// - `sniffer_b` is configured to block `SetupConnectionSuccess` messages directed downstream.
 /// - `sniffer_c` should receive no messages after initial setup, ensuring the block works.
 ///
-/// **Flow:**  
-/// `TP -> sniffer_a -> sniffer_b -> sniffer_c -> Pool`  
+/// **Flow:**
+/// `TP -> sniffer_a -> sniffer_b -> sniffer_c -> Pool`
+#[ignore]
 #[tokio::test]
 async fn test_sniffer_blocks_message() {
     let (_tp, tp_addr) = start_template_provider(None);

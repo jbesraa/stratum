@@ -6,8 +6,8 @@
 // all tests. This is because tracing is a global setting.
 use crate::sniffer::MessageDirection;
 use const_sv2::{
-    MESSAGE_TYPE_MINING_SET_NEW_PREV_HASH, MESSAGE_TYPE_NEW_EXTENDED_MINING_JOB,
-    MESSAGE_TYPE_NEW_TEMPLATE,
+    MESSAGE_TYPE_COINBASE_OUTPUT_DATA_SIZE, MESSAGE_TYPE_MINING_SET_NEW_PREV_HASH,
+    MESSAGE_TYPE_NEW_EXTENDED_MINING_JOB, MESSAGE_TYPE_NEW_TEMPLATE,
 };
 use integration_tests_sv2::*;
 use roles_logic_sv2::{
@@ -45,6 +45,12 @@ async fn success_pool_template_provider_connection() {
         &sniffer.next_message_from_upstream(),
         SetupConnectionSuccess
     );
+    sniffer
+        .wait_for_message_type(
+            MessageDirection::ToUpstream,
+            MESSAGE_TYPE_COINBASE_OUTPUT_DATA_SIZE,
+        )
+        .await;
     assert_tp_message!(
         &sniffer.next_message_from_downstream(),
         CoinbaseOutputDataSize
