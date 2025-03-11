@@ -14,3 +14,5 @@ keywords = ["stratum", "mining", "bitcoin", "protocol"]
 [dependencies]
 serde = { version = "1.0.89", features = ["derive","alloc"], default-features = false }
 roles_logic_sv2 = { path = "../../../protocols/v2/roles-logic-sv2" }
+stratum-common = { path = "../../../common" }
+tracing = "0.1.41"

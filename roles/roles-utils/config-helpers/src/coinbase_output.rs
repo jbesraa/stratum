@@ -1,63 +1,86 @@
-use roles_logic_sv2::utils::CoinbaseOutput as CoinbaseOutput_;
-use std::convert::TryFrom;
+use std::{convert::TryInto, str::FromStr};
+use stratum_common::bitcoin::{psbt::OutputType, Amount, ScriptBuf, TxOut};
+use tracing::error;
 
-/// [`CoinbaseOutput`] is a struct that represents the output of a coinbase transaction.
-#[derive(Debug, serde::Deserialize, Clone)]
-pub struct CoinbaseOutput {
-    output_script_type: String,
-    output_script_value: String,
+pub enum Error {
+    InvalidCoinbaseOutput,
 }
 
-impl CoinbaseOutput {
-    /// Creates a new [`CoinbaseOutput`].
-    pub fn new(output_script_type: String, output_script_value: String) -> Self {
-        Self {
-            output_script_type,
-            output_script_value,
-        }
+#[derive(Debug, Clone)]
+struct InternalOutputType(OutputType);
+
+impl<'de> serde::Deserialize<'de> for InternalOutputType {
+    fn deserialize<D>(deserializer: D) -> Result<InternalOutputType, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        s.parse().map_err(serde::de::Error::custom)
     }
 }
 
-impl TryFrom<&CoinbaseOutput> for CoinbaseOutput_ {
-    type Error = roles_logic_sv2::Error;
+impl FromStr for InternalOutputType {
+    type Err = roles_logic_sv2::Error;
 
-    fn try_from(pool_output: &CoinbaseOutput) -> Result<Self, Self::Error> {
-        match pool_output.output_script_type.as_str() {
-            "P2PK" | "P2PKH" | "P2WPKH" | "P2SH" | "P2WSH" | "P2TR" => Ok(CoinbaseOutput_ {
-                output_script_type: pool_output.clone().output_script_type,
-                output_script_value: pool_output.clone().output_script_value,
-            }),
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "P2PK" => Ok(Self(OutputType::Bare)),
+            "P2PKH" => Ok(Self(OutputType::Bare)),
+            "P2WPKH" => Ok(Self(OutputType::Wpkh)),
+            "P2SH" => Ok(Self(OutputType::Sh)),
+            "P2WSH" => Ok(Self(OutputType::Wsh)),
+            "P2TR" => Ok(Self(OutputType::Tr)),
             _ => Err(roles_logic_sv2::Error::UnknownOutputScriptType),
         }
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+/// Represents a coinbase output.
+#[derive(Debug, Clone)]
+pub struct CoinbaseOutput {
+    script_type: InternalOutputType,
+    script_value: ScriptBuf,
+}
 
-    #[test]
-    fn test_try_from() {
-        let possible_output_script_types = vec!["P2PK", "P2PKH", "P2WPKH", "P2SH", "P2WSH", "P2TR"];
-        for output_script_type in possible_output_script_types {
-            let value = "value";
-            let pool_output =
-                CoinbaseOutput::new(output_script_type.to_string(), value.to_string());
-            let result = CoinbaseOutput_::try_from(&pool_output);
-            let result = result.unwrap();
-            assert_eq!(result.output_script_type, output_script_type.to_string());
-            assert_eq!(result.output_script_value, value.to_string());
+impl CoinbaseOutput {
+    /// Creates a new [`CoinbaseOutput`].
+    pub fn new(script_type: String, script_value: String) -> Result<Self, Error> {
+        let script_value: ScriptBuf = roles_logic_sv2::utils::CoinbaseOutput {
+            output_script_type: script_type.clone(),
+            output_script_value: script_value,
         }
+        .try_into()
+        .map_err(|e| {
+            error!("Error converting script value: {:?}", e);
+            Error::InvalidCoinbaseOutput
+        })?;
+        let script_type = InternalOutputType::from_str(&script_type).map_err(|e| {
+            error!("Error converting script type: {:?}", e);
+            Error::InvalidCoinbaseOutput
+        })?;
+        Ok(Self {
+            script_type,
+            script_value,
+        })
     }
 
-    #[test]
-    fn test_try_from_unknown_output_script_type() {
-        let pool_output = CoinbaseOutput::new("unknown".to_string(), "value".to_string());
-        let result = CoinbaseOutput_::try_from(&pool_output);
-        assert!(result.is_err());
-        assert!(matches!(
-            result.unwrap_err(),
-            roles_logic_sv2::Error::UnknownOutputScriptType
-        ));
+    /// Returns the [`TxOut`] of the [`CoinbaseOutput`].
+    ///
+    /// Note that the value of the [`TxOut`] is always 0.
+    pub fn get_txout(&self) -> Result<TxOut, roles_logic_sv2::Error> {
+        Ok(TxOut {
+            value: Amount::from_sat(0),
+            script_pubkey: self.script_value.clone(),
+        })
+    }
+
+    /// Returns the script type of the coinbase output.
+    pub fn output_type(&self) -> OutputType {
+        self.script_type.0
+    }
+
+    /// Returns the script value of the coinbase output.
+    pub fn output_script(&self) -> &ScriptBuf {
+        &self.script_value
     }
 }
