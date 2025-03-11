@@ -2,6 +2,7 @@ pub mod config;
 pub mod error;
 pub mod mining_pool;
 pub mod status;
+pub mod tcp_server;
 pub mod template_receiver;
 
 use async_channel::{bounded, unbounded};

@@ -1,4 +1,7 @@
-use crate::config::PoolConfig;
+use crate::{
+    config::PoolConfig,
+    tcp_server::{GenericTcpServer, ServerState},
+};
 
 use super::{
     error::{PoolError, PoolResult},
@@ -28,7 +31,12 @@ use stratum_common::{
     bitcoin::{Amount, ScriptBuf, TxOut},
     secp256k1,
 };
-use tokio::{net::TcpListener, task};
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::{TcpListener, TcpStream},
+    sync::watch,
+    task,
+};
 use tracing::{debug, error, info, warn};
 
 pub mod setup_connection;
@@ -272,6 +280,10 @@ impl Pool {
         config: PoolConfig,
         mut recv_stop_listening: tokio::sync::watch::Receiver<()>,
     ) -> PoolResult<()> {
+        // GenericTcpServer::new(
+
+        //     recv_stop_listening,
+        // )
         let status_tx = self_.safe_lock(|s| s.status_tx.clone())?;
         let listener = match TcpListener::bind(&config.listen_address()).await {
             Ok(listener) => listener,
@@ -573,6 +585,266 @@ impl Pool {
         self.downstreams.remove(&downstream_id);
     }
 }
+
+impl UpstreamServerRole for PoolServer {
+    async fn handle_connection(
+        &self,
+        socket: TcpStream,
+        tx: Arc<tokio::sync::Mutex<watch::Sender<ServerState>>>,
+        // status_tx: status::Sender,
+        // config: PoolConfig,
+        // pool: Arc<Mutex<Pool>>,
+    ) {
+        let config = self.config.clone();
+        let address = socket.peer_addr().unwrap();
+        info!(
+            "New connection from {:?}",
+            socket.peer_addr().map_err(PoolError::Io)
+        );
+        let responder = Responder::from_authority_kp(
+            &config.authority_public_key().into_bytes(),
+            &config.authority_secret_key().into_bytes(),
+            std::time::Duration::from_secs(config.cert_validity_sec()),
+        );
+
+        match responder {
+            Ok(resp) => {
+                if let Ok((receiver, sender, _, _)) =
+                    Connection::new(socket, HandshakeRole::Responder(resp)).await
+                {
+                    // handle_result!(
+                    //     status_tx,
+                    let solution_sender = self.safe_lock(|p| p.solution_sender.clone())?;
+                    let status_tx = self.safe_lock(|s| s.status_tx.clone())?;
+                    let channel_factory = self.safe_lock(|s| s.channel_factory.clone())?;
+
+                    let downstream = Downstream::new(
+                        receiver,
+                        sender,
+                        solution_sender,
+                        self_.clone(),
+                        channel_factory,
+                        // convert Listener variant to Downstream variant
+                        status_tx.listener_to_connection(),
+                        address,
+                    )
+                    .await?;
+
+                    let (_, channel_id) =
+                        downstream.safe_lock(|d| (d.downstream_data.header_only, d.id))?;
+
+                    self_.safe_lock(|p| {
+                        p.downstreams.insert(channel_id, downstream);
+                    })?;
+                    Ok(())
+                    // );
+                } else {
+                    dbg!("Failed to create connection");
+                    return;
+                }
+            }
+            Err(_) => {
+                return;
+            }
+        };
+    }
+}
+
+async fn accept_incoming_connection_(
+    self_: Arc<Mutex<Pool>>,
+    receiver: Receiver<EitherFrame>,
+    sender: Sender<EitherFrame>,
+    address: SocketAddr,
+) -> PoolResult<()> {
+}
+
+/// Accept downstream connection
+pub struct PoolServer {
+    downstreams: HashMap<u32, Arc<tokio::sync::Mutex<Downstream>>, BuildNoHashHasher<u32>>,
+    solution_sender: Sender<SubmitSolution<'static>>,
+    new_template_processed: bool,
+    channel_factory: Arc<tokio::sync::Mutex<PoolChannelFactory>>,
+    last_prev_hash_template_id: u64,
+    status_tx: status::Sender,
+    config: PoolConfig,
+}
+
+impl PoolServer {}
+
+#[derive(Debug)]
+pub struct NewDownstream {
+    // Either group or channel id
+    id: u32,
+    receiver: Arc<tokio::sync::Mutex<Receiver<EitherFrame>>>,
+    sender: Sender<EitherFrame>,
+    downstream_data: CommonDownstreamData,
+    solution_sender: Sender<SubmitSolution<'static>>,
+    channel_factory: Arc<Mutex<PoolChannelFactory>>,
+}
+
+impl NewDownstream {
+    #[allow(clippy::too_many_arguments)]
+    pub async fn new(
+        mut receiver: Receiver<EitherFrame>,
+        mut sender: Sender<EitherFrame>,
+        solution_sender: Sender<SubmitSolution<'static>>,
+        pool: Arc<Mutex<Pool>>,
+        channel_factory: Arc<Mutex<PoolChannelFactory>>,
+        status_tx: status::Sender,
+        address: SocketAddr,
+    ) -> PoolResult<Self> {
+        let setup_connection = Arc::new(Mutex::new(SetupConnectionHandler::new()));
+        let downstream_data =
+            SetupConnectionHandler::setup(setup_connection, &mut receiver, &mut sender, address)
+                .await?;
+
+        let id = match downstream_data.header_only {
+            false => channel_factory.safe_lock(|c| c.new_group_id())?,
+            true => channel_factory.safe_lock(|c| c.new_standard_id_for_hom())?,
+        };
+
+        let self_ = Downstream {
+            id,
+            receiver,
+            sender,
+            downstream_data,
+            solution_sender,
+            channel_factory,
+        };
+
+        let receiver = self.receiver.clone();
+        task::spawn(async move {
+            debug!("Starting up downstream receiver");
+            let receiver_res = cloned
+                .safe_lock(|d| d.receiver.clone())
+                .map_err(|e| PoolError::PoisonLock(e.to_string()));
+            let receiver = match receiver_res {
+                Ok(recv) => recv,
+                Err(e) => {
+                    if let Err(e) = status_tx
+                        .send(status::Status {
+                            state: status::State::Healthy(format!(
+                                "Downstream connection dropped: {}",
+                                e
+                            )),
+                        })
+                        .await
+                    {
+                        error!("Encountered Error but status channel is down: {}", e);
+                    }
+
+                    return;
+                }
+            };
+            loop {
+                match receiver.recv().await {
+                    Ok(received) => {
+                        let received: Result<StdFrame, _> = received
+                            .try_into()
+                            .map_err(|e| PoolError::Codec(codec_sv2::Error::FramingSv2Error(e)));
+                        let std_frame = handle_result!(status_tx, received);
+                        handle_result!(
+                            status_tx,
+                            Downstream::next(cloned.clone(), std_frame).await
+                        );
+                    }
+                    _ => {
+                        let res = pool
+                            .safe_lock(|p| p.downstreams.remove(&id))
+                            .map_err(|e| PoolError::PoisonLock(e.to_string()));
+                        handle_result!(status_tx, res);
+                        error!("Downstream {} disconnected", id);
+                        break;
+                    }
+                }
+            }
+            warn!("Downstream connection dropped");
+        });
+        Ok(self_)
+    }
+
+    pub async fn next(self_mutex: Arc<Mutex<Self>>, mut incoming: StdFrame) -> PoolResult<()> {
+        let message_type = incoming
+            .get_header()
+            .ok_or_else(|| PoolError::Custom(String::from("No header set")))?
+            .msg_type();
+        let payload = incoming.payload();
+        debug!(
+            "Received downstream message type: {:?}, payload: {:?}",
+            message_type, payload
+        );
+        let next_message_to_send = ParseDownstreamMiningMessages::handle_message_mining(
+            self_mutex.clone(),
+            message_type,
+            payload,
+            MiningRoutingLogic::None,
+        );
+        Self::match_send_to(self_mutex, next_message_to_send).await
+    }
+
+    #[async_recursion::async_recursion]
+    async fn match_send_to(
+        self_: Arc<Mutex<Self>>,
+        send_to: Result<SendTo<()>, Error>,
+    ) -> PoolResult<()> {
+        match send_to {
+            Ok(SendTo::Respond(message)) => {
+                debug!("Sending to downstream: {:?}", message);
+                // returning an error will send the error to the main thread,
+                // and the main thread will drop the downstream from the pool
+                if let &Mining::OpenMiningChannelError(_) = &message {
+                    Self::send(self_.clone(), message.clone()).await?;
+                    let downstream_id = self_
+                        .safe_lock(|d| d.id)
+                        .map_err(|e| Error::PoisonLock(e.to_string()))?;
+                    return Err(PoolError::Sv2ProtocolError((
+                        downstream_id,
+                        message.clone(),
+                    )));
+                } else {
+                    Self::send(self_, message.clone()).await?;
+                }
+            }
+            Ok(SendTo::Multiple(messages)) => {
+                debug!("Sending multiple messages to downstream");
+                for message in messages {
+                    debug!("Sending downstream message: {:?}", message);
+                    Self::match_send_to(self_.clone(), Ok(message)).await?;
+                }
+            }
+            Ok(SendTo::None(_)) => {}
+            Ok(m) => {
+                error!("Unexpected SendTo: {:?}", m);
+                panic!();
+            }
+            Err(Error::UnexpectedMessage(_message_type)) => todo!(),
+            Err(e) => {
+                error!("Error: {:?}", e);
+                todo!()
+            }
+        }
+        Ok(())
+    }
+
+    async fn send(
+        self_mutex: Arc<Mutex<Self>>,
+        message: roles_logic_sv2::parsers::Mining<'static>,
+    ) -> PoolResult<()> {
+        //let message = if let Mining::NewExtendedMiningJob(job) = message {
+        //    Mining::NewExtendedMiningJob(extended_job_to_non_segwit(job, 32)?)
+        //} else {
+        //    message
+        //};
+        let sv2_frame: StdFrame = AnyMessage::Mining(message).try_into()?;
+        let sender = self_mutex.safe_lock(|self_| self_.sender.clone())?;
+        sender.send(sv2_frame.into()).await?;
+        Ok(())
+    }
+}
+
+// if let Err(e) = tx.send(ServerState::Running) {
+//     error!("Failed to send server state update: {:?}", e);
+// }
 
 #[cfg(test)]
 mod test {
