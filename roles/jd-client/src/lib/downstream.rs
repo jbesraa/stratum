@@ -635,13 +635,10 @@ impl
     }
 }
 
-impl ParseDownstreamCommonMessages<roles_logic_sv2::routing_logic::NoRouting>
-    for DownstreamMiningNode
-{
+impl ParseDownstreamCommonMessages for DownstreamMiningNode {
     fn handle_setup_connection(
         &mut self,
         _: SetupConnection,
-        _: Option<Result<(CommonDownstreamData, SetupConnectionSuccess), Error>>,
     ) -> Result<roles_logic_sv2::handlers::common::SendTo, Error> {
         let response = SetupConnectionSuccess {
             used_version: 2,
@@ -719,12 +716,7 @@ pub async fn listen_for_downstream_mining(
         }
 
         // Call handle_setup_connection or fail
-        match DownstreamMiningNode::handle_message_common(
-            node.clone(),
-            message_type,
-            payload,
-            routing_logic,
-        ) {
+        match DownstreamMiningNode::handle_message_common(node.clone(), message_type, payload) {
             Ok(SendToCommon::Respond(message)) => {
                 let message = match message {
                     roles_logic_sv2::parsers::CommonMessages::SetupConnectionSuccess(m) => m,
