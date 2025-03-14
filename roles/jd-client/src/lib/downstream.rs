@@ -11,7 +11,7 @@ use roles_logic_sv2::{
     errors::Error,
     handlers::{
         common::{ParseCommonMessagesFromDownstream, SendTo as SendToCommon},
-        mining::{ParseDownstreamMiningMessages, SendTo},
+        mining::{ParseMiningMessagesFromDownstream, SendTo},
         SupportedChannelTypes,
     },
     job_creator::JobsCreators,
@@ -259,7 +259,7 @@ impl DownstreamMiningNode {
 
         let routing_logic = roles_logic_sv2::routing_logic::MiningRoutingLogic::None;
 
-        let next_message_to_send = ParseDownstreamMiningMessages::handle_message_mining(
+        let next_message_to_send = ParseMiningMessagesFromDownstream::handle_message_mining(
             self_mutex.clone(),
             message_type,
             payload,
@@ -437,7 +437,7 @@ use roles_logic_sv2::selectors::NullDownstreamMiningSelector;
 
 /// It impl UpstreamMining cause the proxy act as an upstream node for the DownstreamMiningNode
 impl
-    ParseDownstreamMiningMessages<
+    ParseMiningMessagesFromDownstream<
         UpstreamMiningNode,
         NullDownstreamMiningSelector,
         roles_logic_sv2::routing_logic::NoRouting,
