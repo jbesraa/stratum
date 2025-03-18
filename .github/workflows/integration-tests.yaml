@@ -27,3 +27,8 @@ jobs:
       - name: Roles Integration Tests
         run: |
          RUST_BACKTRACE=1 RUST_LOG=debug cargo test --manifest-path=test/integration-tests/Cargo.toml --verbose --test '*' -- --nocapture --skip test_jdc_pool_fallback_after_submit_rejection --skip translation_proxy_and_jd
+
+      - name: SV1 Integration Tests
+        run: |
+         RUST_BACKTRACE=1 RUST_LOG=debug cargo test --manifest-path=test/integration-tests/Cargo.toml --verbose --test 'sv1' --features sv1 -- --nocapture
+
