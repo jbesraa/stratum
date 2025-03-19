@@ -219,6 +219,7 @@ impl JobDeclaratorClient {
             status::Sender::Downstream(tx_status.clone()),
             miner_tx_out.clone(),
             None,
+            config.jdc_signature().to_string(),
         )
         .await
         .unwrap();
@@ -278,6 +279,7 @@ impl JobDeclaratorClient {
             status::Sender::Upstream(tx_status.clone()),
             task_collector.clone(),
             Arc::new(Mutex::new(PoolChangerTrigger::new(timeout))),
+            config.jdc_signature().to_string(),
         )
         .await
         {
@@ -349,6 +351,7 @@ impl JobDeclaratorClient {
             status::Sender::Downstream(tx_status.clone()),
             vec![],
             Some(jd.clone()),
+            config.jdc_signature().to_string(),
         )
         .await
         {

@@ -49,6 +49,7 @@ pub struct DownstreamMiningNode {
     // used to retreive the job id of the share that we send upstream
     last_template_id: u64,
     pub jd: Option<Arc<Mutex<JobDeclarator>>>,
+    jdc_signature: String,
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -163,6 +164,7 @@ impl DownstreamMiningNode {
         tx_status: status::Sender,
         miner_coinbase_output: Vec<TxOut>,
         jd: Option<Arc<Mutex<JobDeclarator>>>,
+        jdc_signature: String,
     ) -> Self {
         Self {
             receiver,
@@ -179,6 +181,7 @@ impl DownstreamMiningNode {
             // Is upated in the message handler that si called earlier in the main loop.
             last_template_id: 0,
             jd,
+            jdc_signature,
         }
     }
 
@@ -474,21 +477,33 @@ impl ParseMiningMessagesFromDownstream<UpstreamMiningNode> for DownstreamMiningN
             // open we have a factory and if we have a factory we have a channel open. This allowto
             // not change the semantic of Status beween solo and pooled modes
             let extranonce_len = 32;
+            let jdc_signature_len = self.jdc_signature.len();
             let range_0 = std::ops::Range { start: 0, end: 0 };
-            let range_1 = std::ops::Range { start: 0, end: 16 };
+
+            // JDC only allows for one single downstream, so we don't need any free bytes on range_1
+            // we just allocate enough space for the JDC signature
+            let range_1 = std::ops::Range {
+                start: 0,
+                end: jdc_signature_len,
+            };
             let range_2 = std::ops::Range {
-                start: 16,
+                start: jdc_signature_len,
                 end: extranonce_len,
             };
             let ids = Arc::new(Mutex::new(roles_logic_sv2::utils::GroupId::new()));
             let coinbase_outputs = self.miner_coinbase_output.clone();
 
-            let extranonces =
-                ExtendedExtranonce::new(range_0, range_1, range_2, None).map_err(|_| {
-                    roles_logic_sv2::Error::ExtendedExtranonceCreationFailed(
-                        "Failed to create ExtendedExtranonce".into(),
-                    )
-                })?;
+            let extranonces = ExtendedExtranonce::new(
+                range_0,
+                range_1,
+                range_2,
+                Some(self.jdc_signature.as_bytes().to_vec()),
+            )
+            .map_err(|_| {
+                roles_logic_sv2::Error::ExtendedExtranonceCreationFailed(
+                    "Failed to create ExtendedExtranonce".into(),
+                )
+            })?;
             let creator = JobsCreators::new(extranonce_len as u8);
             let share_per_min = 1.0;
             let kind = roles_logic_sv2::channel_logic::channel_factory::ExtendedChannelKind::Pool;
@@ -691,6 +706,7 @@ pub async fn listen_for_downstream_mining(
     tx_status: status::Sender,
     miner_coinbase_output: Vec<TxOut>,
     jd: Option<Arc<Mutex<JobDeclarator>>>,
+    jdc_signature: String,
 ) -> Result<Arc<Mutex<DownstreamMiningNode>>, Error> {
     info!("Listening for downstream mining connections on {}", address);
     let listner = TcpListener::bind(address).await?;
@@ -716,6 +732,7 @@ pub async fn listen_for_downstream_mining(
             tx_status,
             miner_coinbase_output,
             jd,
+            jdc_signature.clone(),
         );
 
         let mut incoming: StdFrame = node.receiver.recv().await.unwrap().try_into().unwrap();
