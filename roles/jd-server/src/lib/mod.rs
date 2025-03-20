@@ -149,29 +149,16 @@ impl JobDeclaratorServer {
             }
         });
 
-        // Start the error handling loop
-        // See `./status.rs` and `utils/error_handling` for information on how this operates
         tokio::spawn(async move {
             loop {
                 let task_status = select! {
-                    task_status = status_rx.recv() => task_status,
-                    interrupt_signal = tokio::signal::ctrl_c() => {
-                        match interrupt_signal {
-                            Ok(()) => {
-                                info!("Interrupt received");
-                            },
-                            Err(err) => {
-                                error!("Unable to listen for interrupt signal: {}", err);
-                                // we also shut down in case of error
-                            },
-                        }
-                        break;
+                    task_status = status_rx.recv() => task_status.unwrap(),
+                    _ = tokio::signal::ctrl_c() => {
+                        break info!("Job Declarator Server: Received ctrl-c signal, shutting down.");
                     }
                 };
-                let task_status: status::Status = task_status.unwrap();
 
                 match task_status.state {
-                    // Should only be sent by the downstream listener
                     status::State::DownstreamShutdown(err) => {
                         error!(
                             "SHUTDOWN from Downstream: {}\nTry to restart the downstream listener",
