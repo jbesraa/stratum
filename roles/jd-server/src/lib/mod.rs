@@ -33,9 +33,7 @@ impl JobDeclaratorServer {
         let mut config = self.config.clone();
         // In case the url came with a trailing slash, we remove it to make sure we end up with
         // `{scheme}://{host}:{port}` format.
-        if config.core_rpc_url().ends_with('/') {
-            config.set_core_rpc_url(config.core_rpc_url().trim_end_matches('/').to_string());
-        }
+        config.set_core_rpc_url(config.core_rpc_url().trim_end_matches('/').to_string());
         let url = config.core_rpc_url().to_string() + ":" + &config.core_rpc_port().to_string();
         let username = config.core_rpc_user();
         let password = config.core_rpc_pass();
