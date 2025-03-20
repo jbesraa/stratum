@@ -211,11 +211,8 @@ pub async fn start_jds(tp_rpc_connection: &ConnectParams) -> (JobDeclaratorServe
             std::time::Duration::from_secs(1),
         );
         let job_declarator_server = JobDeclaratorServer::new(config);
-        let job_declarator_server_clone = job_declarator_server.clone();
-        tokio::spawn(async move {
-            job_declarator_server_clone.start().await.unwrap();
-        });
-        sleep(2).await;
+        job_declarator_server.start().await.unwrap();
+        sleep(1).await;
         (job_declarator_server, listen_jd_address)
     } else {
         panic!("Failed to get TP cookie values");

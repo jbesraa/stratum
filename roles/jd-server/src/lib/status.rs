@@ -28,6 +28,7 @@ pub enum State {
     TemplateProviderShutdown(JdsError),
     DownstreamInstanceDropped(u32),
     Healthy(String),
+    Shutdown
 }
 
 /// message to be sent to the status loop on the main thread
