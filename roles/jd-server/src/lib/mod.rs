@@ -53,99 +53,128 @@ impl JobDeclaratorServer {
         let sender = status::Sender::Downstream(status_tx.clone());
         let mut last_empty_mempool_warning =
             std::time::Instant::now().sub(std::time::Duration::from_secs(60));
-
-        let sender_update_mempool = sender.clone();
         task::spawn(async move {
             loop {
-                let update_mempool_result: Result<(), mempool::error::JdsMempoolError> =
-                    mempool::JDsMempool::update_mempool(mempool_cloned_.clone()).await;
-                if let Err(err) = update_mempool_result {
-                    match err {
-                        JdsMempoolError::EmptyMempool => {
-                            if last_empty_mempool_warning.elapsed().as_secs() >= 60 {
-                                warn!("{:?}", err);
-                                warn!("Template Provider is running, but its mempool is empty (possible reasons: you're testing in testnet, signet, or regtest)");
-                                last_empty_mempool_warning = std::time::Instant::now();
+                select!(
+                    _ = tokio::signal::ctrl_c() => {
+                        break info!("Update Mempool(JDS): Received ctrl-c signal, shutting down.");
+                    }
+                    _ = async {
+                        let update_mempool_result: Result<(), mempool::error::JdsMempoolError> =
+                            mempool::JDsMempool::update_mempool(mempool_cloned_.clone()).await;
+                        if let Err(err) = update_mempool_result {
+                            match err {
+                                JdsMempoolError::EmptyMempool => {
+                                    if last_empty_mempool_warning.elapsed().as_secs() >= 60 {
+                                        warn!("{:?}", err);
+                                        warn!("Template Provider is running, but its mempool is empty (possible reasons: you're testing in testnet, signet, or regtest)");
+                                        last_empty_mempool_warning = std::time::Instant::now();
+                                    }
+                                }
+                                JdsMempoolError::NoClient => {
+                                    mempool::error::handle_error(&err);
+                                    error!("{:?}", err);
+                                    error!("Unable to establish RPC connection with Template Provider (possible reasons: not fully synced, down)");
+                                }
+                                JdsMempoolError::Rpc(_) => {
+                                    mempool::error::handle_error(&err);
+                                    error!("{:?}", err);
+                                    error!("Unable to establish RPC connection with Template Provider (possible reasons: not fully synced, down)");
+                                }
+                                JdsMempoolError::PoisonLock(_) => {
+                                    mempool::error::handle_error(&err);
+                                    error!("{:?}", err);
+                                    error!("Poison lock error)");
+                                }
                             }
                         }
-                        JdsMempoolError::NoClient => {
-                            mempool::error::handle_error(&err);
-                            handle_result!(sender_update_mempool, Err(err));
-                        }
-                        JdsMempoolError::Rpc(_) => {
-                            mempool::error::handle_error(&err);
-                            handle_result!(sender_update_mempool, Err(err));
-                        }
-                        JdsMempoolError::PoisonLock(_) => {
-                            mempool::error::handle_error(&err);
-                            handle_result!(sender_update_mempool, Err(err));
-                        }
-                    }
-                }
-                tokio::time::sleep(mempool_update_interval).await;
-                // DO NOT REMOVE THIS LINE
-                //let _transactions =
-                // mempool::JDsMempool::_get_transaction_list(mempool_cloned_.clone());
+                        tokio::time::sleep(mempool_update_interval).await;
+                    } => {}
+                )
             }
         });
 
         let mempool_cloned = mempool.clone();
-        let sender_submit_solution = sender.clone();
         task::spawn(async move {
             loop {
-                let result = mempool::JDsMempool::on_submit(mempool_cloned.clone()).await;
-                if let Err(err) = result {
-                    match err {
-                        JdsMempoolError::EmptyMempool => {
-                            if last_empty_mempool_warning.elapsed().as_secs() >= 60 {
-                                warn!("{:?}", err);
-                                warn!("Template Provider is running, but its mempool is empty (possible reasons: you're testing in testnet, signet, or regtest)");
-                                last_empty_mempool_warning = std::time::Instant::now();
+                select!(
+                _ = tokio::signal::ctrl_c() => {
+                    break info!(" OnSubmit(JDS): Received ctrl-c signal, shutting down.");
+                }
+                _ = async {
+
+                    let result = mempool::JDsMempool::on_submit(mempool_cloned.clone()).await;
+                    if let Err(err) = result {
+                        match err {
+                            JdsMempoolError::EmptyMempool => {
+                                if last_empty_mempool_warning.elapsed().as_secs() >= 60 {
+                                    warn!("{:?}", err);
+                                    warn!("Template Provider is running, but its mempool is empty (possible reasons: you're testing in testnet, signet, or regtest)");
+                                    last_empty_mempool_warning = std::time::Instant::now();
+                                }
+                            }
+                            _ => {
+                                // TODO here there should be a better error managmenet
+                                mempool::error::handle_error(&err);
+                                // handle_result!(sender_submit_solution, Err(err));
                             }
                         }
-                        _ => {
-                            // TODO here there should be a better error managmenet
-                            mempool::error::handle_error(&err);
-                            handle_result!(sender_submit_solution, Err(err));
-                        }
                     }
-                }
+                } => {}
+
+                );
             }
         });
 
         let cloned = config.clone();
         let mempool_cloned = mempool.clone();
         let (sender_add_txs_to_mempool, receiver_add_txs_to_mempool) = unbounded();
+
         task::spawn(async move {
-            JobDeclarator::start(
-                cloned,
-                sender,
-                mempool_cloned,
-                new_block_sender,
-                sender_add_txs_to_mempool,
-            )
-            .await
+            select!(
+                _ = tokio::signal::ctrl_c() => {
+                    info!("Job Declarator Server: Received ctrl-c signal, shutting down.");
+                }
+                _ = async {
+                    JobDeclarator::start(
+                        cloned,
+                        sender,
+                        mempool_cloned,
+                        new_block_sender,
+                        sender_add_txs_to_mempool,
+                    )
+                        .await
+                } => {}
+            );
         });
+
         task::spawn(async move {
             loop {
-                if let Ok(add_transactions_to_mempool) = receiver_add_txs_to_mempool.recv().await {
-                    let mempool_cloned = mempool.clone();
-                    task::spawn(async move {
-                        match mempool::JDsMempool::add_tx_data_to_mempool(
-                            mempool_cloned,
-                            add_transactions_to_mempool,
-                        )
-                        .await
-                        {
-                            Ok(_) => (),
-                            Err(err) => {
-                                // TODO
-                                // here there should be a better error management
-                                mempool::error::handle_error(&err);
-                            }
-                        }
-                    });
+                select!(
+                _ = tokio::signal::ctrl_c() => {
+                    break info!("Add TX data to mempool(JDS): Received ctrl-c signal, shutting down.");
                 }
+                _ = async {
+                    if let Ok(add_transactions_to_mempool) = receiver_add_txs_to_mempool.recv().await {
+                        let mempool_cloned = mempool.clone();
+                        task::spawn(async move {
+                            match mempool::JDsMempool::add_tx_data_to_mempool(
+                                mempool_cloned,
+                                add_transactions_to_mempool,
+                            )
+                                .await
+                                {
+                                    Ok(_) => (),
+                                    Err(err) => {
+                                        // TODO
+                                        // here there should be a better error management
+                                        mempool::error::handle_error(&err);
+                                    }
+                                }
+                        });
+                    }
+                } => {}
+                );
             }
         });
 
@@ -154,7 +183,7 @@ impl JobDeclaratorServer {
                 let task_status = select! {
                     task_status = status_rx.recv() => task_status.unwrap(),
                     _ = tokio::signal::ctrl_c() => {
-                        break info!("Job Declarator Server: Received ctrl-c signal, shutting down.");
+                        break info!("Job Declarator Server State Manager: Received ctrl-c signal, shutting down.");
                     }
                 };
 
