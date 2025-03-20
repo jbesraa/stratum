@@ -4,21 +4,16 @@ pub mod job_declarator;
 pub mod mempool;
 pub mod status;
 use async_channel::{bounded, unbounded, Receiver, Sender};
-use codec_sv2::{StandardEitherFrame, StandardSv2Frame};
 use config::JobDeclaratorServerConfig;
 use error::JdsError;
 use error_handling::handle_result;
 use job_declarator::JobDeclarator;
 use mempool::error::JdsMempoolError;
-use roles_logic_sv2::{parsers::AnyMessage as JdsMessages, utils::Mutex};
+use roles_logic_sv2::utils::Mutex;
 pub use rpc_sv2::Uri;
 use std::{ops::Sub, str::FromStr, sync::Arc};
 use tokio::{select, task};
 use tracing::{error, info, warn};
-
-pub type Message = JdsMessages<'static>;
-pub type StdFrame = StandardSv2Frame<Message>;
-pub type EitherFrame = StandardEitherFrame<Message>;
 
 #[derive(Debug, Clone)]
 pub struct JobDeclaratorServer {

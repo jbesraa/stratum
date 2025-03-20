@@ -1,10 +1,10 @@
 pub mod message_handler;
 use super::{
-    error::JdsError, mempool::JDsMempool, status, EitherFrame, JobDeclaratorServerConfig, StdFrame,
+    error::JdsError, mempool::JDsMempool, status, JobDeclaratorServerConfig,
 };
 use async_channel::{Receiver, Sender};
 use binary_sv2::{B0255, U256};
-use codec_sv2::{HandshakeRole, Responder};
+use codec_sv2::{HandshakeRole, Responder, StandardEitherFrame, StandardSv2Frame};
 use core::panic;
 use error_handling::handle_result;
 use key_utils::{Secp256k1PublicKey, Secp256k1SecretKey, SignatureService};
@@ -27,6 +27,10 @@ use stratum_common::bitcoin::{
     consensus::{encode::serialize, Encodable},
     Block, Transaction, Txid,
 };
+
+pub type StdFrame = StandardSv2Frame<Message>;
+pub type EitherFrame = StandardEitherFrame<Message>;
+pub type Message = JdsMessages<'static>;
 
 #[derive(Clone, Debug)]
 pub enum TransactionState {
