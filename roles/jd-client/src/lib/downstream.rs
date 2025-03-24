@@ -466,6 +466,12 @@ impl
         &mut self,
         m: OpenExtendedMiningChannel,
     ) -> Result<SendTo<UpstreamMiningNode>, Error> {
+        info!(
+            "Received OpenExtendedMiningChannel from: {} with id: {}",
+            std::str::from_utf8(m.user_identity.as_ref()).unwrap_or("Unknown identity"),
+            m.get_request_id_as_u32()
+        );
+        debug!("OpenExtendedMiningChannel: {:?}", m);
         if !self.status.is_solo_miner() {
             // Safe unwrap alreay checked if it cointains upstream with is_solo_miner
             Ok(SendTo::RelaySameMessageToRemote(
@@ -521,6 +527,7 @@ impl
         &mut self,
         m: UpdateChannel,
     ) -> Result<SendTo<UpstreamMiningNode>, Error> {
+        info!("Received UpdateChannel message");
         if !self.status.is_solo_miner() {
             // Safe unwrap alreay checked if it cointains upstream with is_solo_miner
             Ok(SendTo::RelaySameMessageToRemote(
@@ -552,6 +559,8 @@ impl
         &mut self,
         m: SubmitSharesExtended,
     ) -> Result<SendTo<UpstreamMiningNode>, Error> {
+        info!("Received SubmitSharesExtended message");
+        debug!("SubmitSharesExtended {:?}", m);
         match self
             .status
             .get_channel()
@@ -715,7 +724,6 @@ pub async fn listen_for_downstream_mining(
         let mut incoming: StdFrame = node.receiver.recv().await.unwrap().try_into().unwrap();
         let message_type = incoming.get_header().unwrap().msg_type();
         let payload = incoming.payload();
-        let routing_logic = roles_logic_sv2::routing_logic::CommonRoutingLogic::None;
         let node = Arc::new(Mutex::new(node));
         if let Some(upstream) = upstream {
             upstream
