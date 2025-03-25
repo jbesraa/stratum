@@ -12,7 +12,7 @@ use std::{
 use tokio::{
     select,
     sync::{broadcast, Notify},
-    task::{self, AbortHandle},
+    task,
 };
 use tracing::{debug, error, info, warn};
 pub use v1::server_to_client;
@@ -58,20 +58,13 @@ impl TranslatorSv2 {
             broadcast::Receiver<server_to_client::Notify>,
         ) = broadcast::channel(10);
 
-        let task_collector: Arc<Mutex<Vec<(AbortHandle, String)>>> =
-            Arc::new(Mutex::new(Vec::new()));
-
         Self::internal_start(
             self.config.clone(),
             tx_sv1_notify.clone(),
             target.clone(),
             tx_status.clone(),
-            task_collector.clone(),
         )
         .await;
-
-        debug!("Starting up signal listener");
-        let task_collector_ = task_collector.clone();
 
         debug!("Starting up status listener");
         let wait_time = self.reconnect_wait_time;
@@ -98,7 +91,6 @@ impl TranslatorSv2 {
                             }
                             State::UpstreamTryReconnect(err) => {
                                 error!("Trying to reconnect the Upstream because of: {}", err);
-                                let task_collector1 = task_collector_.clone();
                                 let tx_sv1_notify1 = tx_sv1_notify.clone();
                                 let target = target.clone();
                                 let tx_status = tx_status.clone();
@@ -110,8 +102,7 @@ impl TranslatorSv2 {
                                     tokio::time::sleep(std::time::Duration::from_millis(wait_time)).await;
 
                                     // kill al the tasks
-                                    let task_collector_aborting = task_collector1.clone();
-                                    kill_tasks(task_collector_aborting.clone());
+                                    // kill_tasks(task_collector_aborting.clone());
 
                                     warn!("Trying reconnecting to upstream");
                                     Self::internal_start(
@@ -119,7 +110,6 @@ impl TranslatorSv2 {
                                         tx_sv1_notify1,
                                         target.clone(),
                                         tx_status.clone(),
-                                        task_collector1,
                                     )
                                     .await;
                                 });
@@ -130,13 +120,13 @@ impl TranslatorSv2 {
                         }
                     } else {
                         info!("Channel closed");
-                        kill_tasks(task_collector.clone());
+                        // kill_tasks(task_collector.clone());
                         break; // Channel closed
                     }
                 }
                 _ = self.shutdown.notified() => {
                     info!("Shutting down gracefully...");
-                    kill_tasks(task_collector.clone());
+                    // kill_tasks(task_collector.clone());
                     break;
                 }
             }
@@ -148,7 +138,6 @@ impl TranslatorSv2 {
         tx_sv1_notify: broadcast::Sender<server_to_client::Notify<'static>>,
         target: Arc<Mutex<Vec<u8>>>,
         tx_status: async_channel::Sender<Status<'static>>,
-        task_collector: Arc<Mutex<Vec<(AbortHandle, String)>>>,
     ) {
         // Sender/Receiver to send a SV2 `SubmitSharesExtended` from the `Bridge` to the `Upstream`
         // (Sender<SubmitSharesExtended<'static>>, Receiver<SubmitSharesExtended<'static>>)
@@ -182,7 +171,6 @@ impl TranslatorSv2 {
         );
 
         let diff_config = Arc::new(Mutex::new(proxy_config.upstream_difficulty_config.clone()));
-        let task_collector_upstream = task_collector.clone();
         // Instantiate a new `Upstream` (SV2 Pool)
         let upstream = match upstream_sv2::Upstream::new(
             upstream_addr,
@@ -195,7 +183,6 @@ impl TranslatorSv2 {
             status::Sender::Upstream(tx_status.clone()),
             target.clone(),
             diff_config.clone(),
-            task_collector_upstream,
         )
         .await
         {
@@ -205,12 +192,11 @@ impl TranslatorSv2 {
                 return;
             }
         };
-        let task_collector_init_task = task_collector.clone();
         // Spawn a task to do all of this init work so that the main thread
         // can listen for signals and failures on the status channel. This
         // allows for the tproxy to fail gracefully if any of these init tasks
         //fail
-        let task = task::spawn(async move {
+        task::spawn(async move {
             // Connect to the SV2 Upstream role
             match upstream_sv2::Upstream::connect(
                 upstream.clone(),
@@ -250,7 +236,6 @@ impl TranslatorSv2 {
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             }
 
-            let task_collector_bridge = task_collector_init_task.clone();
             // Instantiate a new `Bridge` and begins handling incoming messages
             let b = proxy::Bridge::new(
                 rx_sv1_downstream,
@@ -262,7 +247,6 @@ impl TranslatorSv2 {
                 extended_extranonce,
                 target,
                 up_id,
-                task_collector_bridge,
             );
             proxy::Bridge::start(b.clone());
 
@@ -272,7 +256,6 @@ impl TranslatorSv2 {
                 proxy_config.downstream_port,
             );
 
-            let task_collector_downstream = task_collector_init_task.clone();
             // Accept connections from one or more SV1 Downstream roles (SV1 Mining Devices)
             downstream_sv1::Downstream::accept_connections(
                 downstream_addr,
@@ -282,11 +265,8 @@ impl TranslatorSv2 {
                 b,
                 proxy_config.downstream_difficulty_config,
                 diff_config,
-                task_collector_downstream,
             );
         }); // End of init task
-        let _ =
-            task_collector.safe_lock(|t| t.push((task.abort_handle(), "init task".to_string())));
     }
 
     /// Closes Translator role and any open connection associated with it.
@@ -297,15 +277,6 @@ impl TranslatorSv2 {
     pub fn shutdown(&self) {
         self.shutdown.notify_one();
     }
-}
-
-fn kill_tasks(task_collector: Arc<Mutex<Vec<(AbortHandle, String)>>>) {
-    let _ = task_collector.safe_lock(|t| {
-        while let Some(handle) = t.pop() {
-            handle.0.abort();
-            warn!("Killed task: {:?}", handle.1);
-        }
-    });
 }
 
 #[cfg(test)]
