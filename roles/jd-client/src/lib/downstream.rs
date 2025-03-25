@@ -718,10 +718,9 @@ pub async fn listen_for_downstream_mining(
             std::time::Duration::from_secs(cert_validity_sec),
         )
         .unwrap();
-        let (receiver, sender, recv_task_abort_handler, send_task_abort_handler) =
-            Connection::new(stream, HandshakeRole::Responder(responder))
-                .await
-                .expect("impossible to connect");
+        let (receiver, sender) = Connection::new(stream, HandshakeRole::Responder(responder))
+            .await
+            .expect("impossible to connect");
         let node = DownstreamMiningNode::new(
             receiver,
             sender,
@@ -762,8 +761,6 @@ pub async fn listen_for_downstream_mining(
                     n.task_collector
                         .safe_lock(|c| {
                             c.push(main_task.abort_handle());
-                            c.push(recv_task_abort_handler);
-                            c.push(send_task_abort_handler);
                         })
                         .unwrap()
                 })
