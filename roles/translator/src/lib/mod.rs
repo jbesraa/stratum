@@ -9,11 +9,7 @@ use std::{
     sync::Arc,
 };
 
-use tokio::{
-    select,
-    sync::{broadcast, Notify},
-    task,
-};
+use tokio::{select, sync::broadcast, task};
 use tracing::{debug, error, info, warn};
 pub use v1::server_to_client;
 
@@ -33,7 +29,7 @@ pub mod utils;
 pub struct TranslatorSv2 {
     config: ProxyConfig,
     reconnect_wait_time: u64,
-    shutdown: Arc<Notify>,
+    status_tx: Arc<std::sync::Mutex<Option<async_channel::Sender<status::Status<'static>>>>>,
 }
 
 impl TranslatorSv2 {
@@ -43,12 +39,20 @@ impl TranslatorSv2 {
         Self {
             config,
             reconnect_wait_time: wait_time,
-            shutdown: Arc::new(Notify::new()),
+            status_tx: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
     pub async fn start(self) {
-        let (tx_status, rx_status) = unbounded();
+        let (status_tx, status_rx) = unbounded();
+        let (send_stop_signal, recv_stop_signal) = tokio::sync::watch::channel(());
+
+        if let Ok(mut s_tx) = self.status_tx.lock() {
+            *s_tx = Some(status_tx.clone());
+        } else {
+            error!("Failed to access Pool status lock");
+            panic!("Failed to access Pool status lock");
+        }
 
         let target = Arc::new(Mutex::new(vec![0; 32]));
 
@@ -62,7 +66,8 @@ impl TranslatorSv2 {
             self.config.clone(),
             tx_sv1_notify.clone(),
             target.clone(),
-            tx_status.clone(),
+            status_tx.clone(),
+            recv_stop_signal.clone(),
         )
         .await;
 
@@ -70,46 +75,39 @@ impl TranslatorSv2 {
         let wait_time = self.reconnect_wait_time;
         // Check all tasks if is_finished() is true, if so exit
 
-        tokio::spawn({
-            let shutdown_signal = self.shutdown.clone();
-            async move {
-                if tokio::signal::ctrl_c().await.is_ok() {
-                    info!("Interrupt received");
-                    shutdown_signal.notify_one();
-                }
-            }
-        });
-
         loop {
             select! {
-                task_status = rx_status.recv().fuse() => {
+                task_status = status_rx.recv().fuse() => {
                     if let Ok(task_status_) = task_status {
                         match task_status_.state {
                             State::DownstreamShutdown(err) | State::BridgeShutdown(err) | State::UpstreamShutdown(err) => {
                                 error!("SHUTDOWN from: {}", err);
-                                self.shutdown();
+                                let _ = send_stop_signal.send(());
+                                break;
                             }
                             State::UpstreamTryReconnect(err) => {
                                 error!("Trying to reconnect the Upstream because of: {}", err);
                                 let tx_sv1_notify1 = tx_sv1_notify.clone();
                                 let target = target.clone();
-                                let tx_status = tx_status.clone();
+                                let status_tx = status_tx.clone();
                                 let proxy_config = self.config.clone();
+                                let _ = send_stop_signal.send(());
+                                // this and the line before it are kinda weird
+                                // we should probably rethink how we call "internal_start"
+                                let recv_stop_signal_clone = recv_stop_signal.clone();
                                 tokio::spawn (async move {
                                     // wait a random amount of time between 0 and 3000ms
                                     // if all the downstreams try to reconnect at the same time, the upstream may
                                     // fail
                                     tokio::time::sleep(std::time::Duration::from_millis(wait_time)).await;
 
-                                    // kill al the tasks
-                                    // kill_tasks(task_collector_aborting.clone());
-
                                     warn!("Trying reconnecting to upstream");
                                     Self::internal_start(
                                         proxy_config,
                                         tx_sv1_notify1,
                                         target.clone(),
-                                        tx_status.clone(),
+                                        status_tx.clone(),
+                                        recv_stop_signal_clone
                                     )
                                     .await;
                                 });
@@ -117,17 +115,17 @@ impl TranslatorSv2 {
                             State::Healthy(msg) => {
                                 info!("HEALTHY message: {}", msg);
                             }
+                            State::Shutdown => {
+                                info!("Received shutdown signal");
+                                let _ = send_stop_signal.send(());
+                                break;
+                            }
                         }
                     } else {
                         info!("Channel closed");
-                        // kill_tasks(task_collector.clone());
+                        let _ = send_stop_signal.send(());
                         break; // Channel closed
                     }
-                }
-                _ = self.shutdown.notified() => {
-                    info!("Shutting down gracefully...");
-                    // kill_tasks(task_collector.clone());
-                    break;
                 }
             }
         }
@@ -137,8 +135,10 @@ impl TranslatorSv2 {
         proxy_config: ProxyConfig,
         tx_sv1_notify: broadcast::Sender<server_to_client::Notify<'static>>,
         target: Arc<Mutex<Vec<u8>>>,
-        tx_status: async_channel::Sender<Status<'static>>,
+        status_tx: async_channel::Sender<Status<'static>>,
+        recv_stop_signal: tokio::sync::watch::Receiver<()>,
     ) {
+        let mut cloned_recv_stop_signal = recv_stop_signal.clone();
         // Sender/Receiver to send a SV2 `SubmitSharesExtended` from the `Bridge` to the `Upstream`
         // (Sender<SubmitSharesExtended<'static>>, Receiver<SubmitSharesExtended<'static>>)
         let (tx_sv2_submit_shares_ext, rx_sv2_submit_shares_ext) = bounded(10);
@@ -180,7 +180,7 @@ impl TranslatorSv2 {
             tx_sv2_new_ext_mining_job,
             proxy_config.min_extranonce2_size,
             tx_sv2_extranonce,
-            status::Sender::Upstream(tx_status.clone()),
+            status::Sender::Upstream(status_tx.clone()),
             target.clone(),
             diff_config.clone(),
         )
@@ -197,75 +197,88 @@ impl TranslatorSv2 {
         // allows for the tproxy to fail gracefully if any of these init tasks
         //fail
         task::spawn(async move {
-            // Connect to the SV2 Upstream role
-            match upstream_sv2::Upstream::connect(
-                upstream.clone(),
-                proxy_config.min_supported_version,
-                proxy_config.max_supported_version,
-            )
-            .await
-            {
-                Ok(_) => info!("Connected to Upstream!"),
-                Err(e) => {
-                    error!("Failed to connect to Upstream EXITING! : {}", e);
+            tokio::select!(
+                _ = cloned_recv_stop_signal.changed() => {
+                    info!("Received stop signal");
                     return;
                 }
-            }
+                _ = async {
+                    match upstream_sv2::Upstream::connect(
+                        upstream.clone(),
+                        proxy_config.min_supported_version,
+                        proxy_config.max_supported_version,
+                    )
+                    .await
+                    {
+                        Ok(_) => info!("Connected to Upstream!"),
+                        Err(e) => {
+                            error!("Failed to connect to Upstream EXITING! : {}", e);
+                            return;
+                        }
+                    }
 
-            // Start receiving messages from the SV2 Upstream role
-            if let Err(e) = upstream_sv2::Upstream::parse_incoming(upstream.clone()) {
-                error!("failed to create sv2 parser: {}", e);
-                return;
-            }
+                    // Start receiving messages from the SV2 Upstream role
+                    if let Err(e) =
+                        upstream_sv2::Upstream::parse_incoming(upstream.clone(), recv_stop_signal.clone())
+                    {
+                        error!("failed to create sv2 parser: {}", e);
+                        return;
+                    }
 
-            debug!("Finished starting upstream listener");
-            // Start task handler to receive submits from the SV1 Downstream role once it connects
-            if let Err(e) = upstream_sv2::Upstream::handle_submit(upstream.clone()) {
-                error!("Failed to create submit handler: {}", e);
-                return;
-            }
+                    debug!("Finished starting upstream listener");
+                    // Start task handler to receive submits from the SV1 Downstream role once it
+                    // connects
+                    if let Err(e) = upstream_sv2::Upstream::handle_submit(upstream.clone()) {
+                        error!("Failed to create submit handler: {}", e);
+                        return;
+                    }
 
-            // Receive the extranonce information from the Upstream role to send to the Downstream
-            // role once it connects also used to initialize the bridge
-            let (extended_extranonce, up_id) = rx_sv2_extranonce.recv().await.unwrap();
-            loop {
-                let target: [u8; 32] = target.safe_lock(|t| t.clone()).unwrap().try_into().unwrap();
-                if target != [0; 32] {
-                    break;
-                };
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-            }
+                    // Receive the extranonce information from the Upstream role to send to the
+                    // Downstream role once it connects also used to initialize
+                    // the bridge
+                    let (extended_extranonce, up_id) = rx_sv2_extranonce.recv().await.unwrap();
+                    loop {
+                        let target: [u8; 32] =
+                            target.safe_lock(|t| t.clone()).unwrap().try_into().unwrap();
+                        if target != [0; 32] {
+                            break;
+                        };
+                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    }
 
-            // Instantiate a new `Bridge` and begins handling incoming messages
-            let b = proxy::Bridge::new(
-                rx_sv1_downstream,
-                tx_sv2_submit_shares_ext,
-                rx_sv2_set_new_prev_hash,
-                rx_sv2_new_ext_mining_job,
-                tx_sv1_notify.clone(),
-                status::Sender::Bridge(tx_status.clone()),
-                extended_extranonce,
-                target,
-                up_id,
-            );
-            proxy::Bridge::start(b.clone());
+                    // Instantiate a new `Bridge` and begins handling incoming messages
+                    let b = proxy::Bridge::new(
+                        rx_sv1_downstream,
+                        tx_sv2_submit_shares_ext,
+                        rx_sv2_set_new_prev_hash,
+                        rx_sv2_new_ext_mining_job,
+                        tx_sv1_notify.clone(),
+                        status::Sender::Bridge(status_tx.clone()),
+                        extended_extranonce,
+                        target,
+                        up_id,
+                    );
+                    proxy::Bridge::start(b.clone(), recv_stop_signal.clone());
 
-            // Format `Downstream` connection address
-            let downstream_addr = SocketAddr::new(
-                IpAddr::from_str(&proxy_config.downstream_address).unwrap(),
-                proxy_config.downstream_port,
-            );
+                    // Format `Downstream` connection address
+                    let downstream_addr = SocketAddr::new(
+                        IpAddr::from_str(&proxy_config.downstream_address).unwrap(),
+                        proxy_config.downstream_port,
+                    );
 
-            // Accept connections from one or more SV1 Downstream roles (SV1 Mining Devices)
-            downstream_sv1::Downstream::accept_connections(
-                downstream_addr,
-                tx_sv1_bridge,
-                tx_sv1_notify,
-                status::Sender::DownstreamListener(tx_status.clone()),
-                b,
-                proxy_config.downstream_difficulty_config,
-                diff_config,
-            );
+                    // Accept connections from one or more SV1 Downstream roles (SV1 Mining Devices)
+                    downstream_sv1::Downstream::accept_connections(
+                        downstream_addr,
+                        tx_sv1_bridge,
+                        tx_sv1_notify,
+                        status::Sender::DownstreamListener(status_tx.clone()),
+                        b,
+                        proxy_config.downstream_difficulty_config,
+                        diff_config,
+                        recv_stop_signal
+                    );
+                } => {}
+            )
         }); // End of init task
     }
 
@@ -275,7 +288,28 @@ impl TranslatorSv2 {
     /// Translator and any open connection most be re-initiated upon new
     /// start.
     pub fn shutdown(&self) {
-        self.shutdown.notify_one();
+        info!("Attempting to shutdown tproxy");
+        if let Ok(status_tx) = &self.status_tx.lock() {
+            if let Some(status_tx) = status_tx.as_ref().cloned() {
+                info!("tproxy is running, sending shutdown signal");
+                tokio::spawn(async move {
+                    if let Err(e) = status_tx
+                        .send(status::Status {
+                            state: status::State::Shutdown,
+                        })
+                        .await
+                    {
+                        error!("Failed to send shutdown signal to status loop: {:?}", e);
+                    } else {
+                        info!("Sent shutdown signal to tproxy");
+                    }
+                });
+            } else {
+                info!("tproxy is not running.");
+            }
+        } else {
+            error!("Failed to access Pool status lock");
+        }
     }
 }
 

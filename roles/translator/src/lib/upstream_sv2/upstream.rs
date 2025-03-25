@@ -267,7 +267,10 @@ impl Upstream {
     /// Parses the incoming SV2 message from the Upstream role and routes the message to the
     /// appropriate handler.
     #[allow(clippy::result_large_err)]
-    pub fn parse_incoming(self_: Arc<Mutex<Self>>) -> ProxyResult<'static, ()> {
+    pub fn parse_incoming(
+        self_: Arc<Mutex<Self>>,
+        mut recv_stop_signal: tokio::sync::watch::Receiver<()>,
+    ) -> ProxyResult<'static, ()> {
         let clone = self_.clone();
         let (
             tx_frame,
@@ -293,10 +296,20 @@ impl Upstream {
             let tx_status = tx_status.clone();
             tokio::task::spawn(async move {
                 // No need to start diff management immediatly
-                sleep(Duration::from_secs(10)).await;
-                loop {
-                    handle_result!(tx_status, Self::try_update_hashrate(self_.clone()).await);
-                }
+                tokio::select!(
+                    _ = recv_stop_signal.changed() => {
+                        info!("Stopping diff management");
+                    }
+                    _ = async {
+                        sleep(Duration::from_secs(10)).await;
+                        loop {
+                            handle_result!(
+                                tx_status,
+                                Self::try_update_hashrate(self_.clone()).await
+                            );
+                        }
+                    } => {}
+                )
             });
         }
 

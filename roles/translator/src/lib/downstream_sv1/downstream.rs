@@ -9,7 +9,8 @@ use error_handling::handle_result;
 use futures::{FutureExt, StreamExt};
 use tokio::{
     io::{AsyncWriteExt, BufReader},
-    net::{TcpListener, TcpStream}, sync::broadcast,
+    net::{TcpListener, TcpStream},
+    sync::broadcast,
 };
 
 use super::{kill, DownstreamMessages, SubmitShareWithChannelId, SUBSCRIBE_TIMEOUT_SECS};
@@ -105,6 +106,7 @@ impl Downstream {
         host: String,
         difficulty_config: DownstreamDifficultyConfig,
         upstream_difficulty_config: Arc<Mutex<UpstreamDifficultyConfig>>,
+        mut recv_stop_signal: tokio::sync::watch::Receiver<()>,
     ) {
         // Reads and writes from Downstream SV1 Mining Device Client
         let (socket_reader, mut socket_writer) = stream.into_split();
@@ -145,54 +147,62 @@ impl Downstream {
         // SV1 message received, a message response is sent directly back to the SV1 Downstream
         // role, or the message is sent upwards to the Bridge for translation into a SV2 message
         // and then sent to the SV2 Upstream role.
+        let mut cloned_recv_stop_signal = recv_stop_signal.clone();
+        let mut cloned_recv_stop_signal_1 = recv_stop_signal.clone();
         tokio::task::spawn(async move {
-            let reader = BufReader::new(socket_reader);
-            let mut messages =
-                FramedRead::new(reader, LinesCodec::new_with_max_length(MAX_LINE_LENGTH));
-            loop {
-                // Read message from SV1 Mining Device Client socket
-                // On message receive, parse to `json_rpc:Message` and send to Upstream
-                // `Translator.receive_downstream` via `sender_upstream` done in
-                // `send_message_upstream`.
-                select! {
-                    res = messages.next().fuse() => {
-                        match res {
-                            Some(Ok(incoming)) => {
-                                debug!("Receiving from Mining Device {}: {:?}", &host_, &incoming);
-                                let incoming: json_rpc::Message = handle_result!(tx_status_reader, serde_json::from_str(&incoming));
-                                // Handle what to do with message
-                                // if let json_rpc::Message
+            tokio::select!(
+                _ = cloned_recv_stop_signal.changed() => {
+                },
+                _ = async {
+                    let reader = BufReader::new(socket_reader);
+                    let mut messages =
+                        FramedRead::new(reader, LinesCodec::new_with_max_length(MAX_LINE_LENGTH));
+                    loop {
+                        // Read message from SV1 Mining Device Client socket
+                        // On message receive, parse to `json_rpc:Message` and send to Upstream
+                        // `Translator.receive_downstream` via `sender_upstream` done in
+                        // `send_message_upstream`.
+                        select! {
+                            res = messages.next().fuse() => {
+                                match res {
+                                    Some(Ok(incoming)) => {
+                                        debug!("Receiving from Mining Device {}: {:?}", &host_, &incoming);
+                                        let incoming: json_rpc::Message = handle_result!(tx_status_reader, serde_json::from_str(&incoming));
+                                        // Handle what to do with message
+                                        // if let json_rpc::Message
 
-                                // if message is Submit Shares update difficulty management
-                                if let v1::Message::StandardRequest(standard_req) = incoming.clone() {
-                                    if let Ok(Submit{..}) = standard_req.try_into() {
-                                        handle_result!(tx_status_reader, Self::save_share(self_.clone()));
+                                        // if message is Submit Shares update difficulty management
+                                        if let v1::Message::StandardRequest(standard_req) = incoming.clone() {
+                                            if let Ok(Submit{..}) = standard_req.try_into() {
+                                                handle_result!(tx_status_reader, Self::save_share(self_.clone()));
+                                            }
+                                        }
+
+                                        let res = Self::handle_incoming_sv1(self_.clone(), incoming).await;
+                                        handle_result!(tx_status_reader, res);
+                                    }
+                                    Some(Err(_)) => {
+                                        handle_result!(tx_status_reader, Err(Error::Sv1MessageTooLong));
+                                    }
+                                    None => {
+                                        handle_result!(tx_status_reader, Err(
+                                                std::io::Error::new(
+                                                    std::io::ErrorKind::ConnectionAborted,
+                                                    "Connection closed by client"
+                                                )
+                                        ));
                                     }
                                 }
-
-                                let res = Self::handle_incoming_sv1(self_.clone(), incoming).await;
-                                handle_result!(tx_status_reader, res);
+                            },
+                            _ = rx_shutdown_clone.recv().fuse() => {
+                                break;
                             }
-                            Some(Err(_)) => {
-                                handle_result!(tx_status_reader, Err(Error::Sv1MessageTooLong));
-                            }
-                            None => {
-                                handle_result!(tx_status_reader, Err(
-                                    std::io::Error::new(
-                                        std::io::ErrorKind::ConnectionAborted,
-                                        "Connection closed by client"
-                                    )
-                                ));
-                            }
-                        }
-                    },
-                    _ = rx_shutdown_clone.recv().fuse() => {
-                        break;
+                        };
                     }
-                };
-            }
-            kill(&tx_shutdown_clone).await;
-            warn!("Downstream: Shutting down sv1 downstream reader");
+                    kill(&tx_shutdown_clone).await;
+                    warn!("Downstream: Shutting down sv1 downstream reader");
+                } => {}
+            )
         });
 
         let rx_shutdown_clone = rx_shutdown.clone();
@@ -203,32 +213,38 @@ impl Downstream {
         // Task to receive SV1 message responses to SV1 messages that do NOT need translation.
         // These response messages are sent directly to the SV1 Downstream role.
         tokio::task::spawn(async move {
-            loop {
-                select! {
-                    res = receiver_outgoing.recv().fuse() => {
-                        let to_send = handle_result!(tx_status_writer, res);
-                        let to_send = match serde_json::to_string(&to_send) {
-                            Ok(string) => format!("{}\n", string),
-                            Err(_e) => {
-                                debug!("\nDownstream: Bad SV1 server message\n");
+            tokio::select!(
+                _ = cloned_recv_stop_signal_1.changed() => {
+                },
+                _ = async {
+                    loop {
+                        select! {
+                            res = receiver_outgoing.recv().fuse() => {
+                                let to_send = handle_result!(tx_status_writer, res);
+                                let to_send = match serde_json::to_string(&to_send) {
+                                    Ok(string) => format!("{}\n", string),
+                                    Err(_e) => {
+                                        debug!("\nDownstream: Bad SV1 server message\n");
+                                        break;
+                                    }
+                                };
+                                debug!("Sending to Mining Device: {} - {:?}", &host_, &to_send);
+                                let res = socket_writer
+                                    .write_all(to_send.as_bytes())
+                                    .await;
+                                handle_result!(tx_status_writer, res);
+                            },
+                            _ = rx_shutdown_clone.recv().fuse() => {
                                 break;
                             }
                         };
-                        debug!("Sending to Mining Device: {} - {:?}", &host_, &to_send);
-                        let res = socket_writer
-                                    .write_all(to_send.as_bytes())
-                                    .await;
-                        handle_result!(tx_status_writer, res);
-                    },
-                    _ = rx_shutdown_clone.recv().fuse() => {
-                            break;
-                        }
-                };
-            }
-            kill(&tx_shutdown_clone).await;
-            warn!(
-                "Downstream: Shutting down sv1 downstream writer: {}",
-                &host_
+                    }
+                    kill(&tx_shutdown_clone).await;
+                    warn!(
+                        "Downstream: Shutting down sv1 downstream writer: {}",
+                        &host_
+                    );
+                } => {}
             );
         });
 
@@ -236,84 +252,90 @@ impl Downstream {
         let self_ = downstream.clone();
 
         tokio::task::spawn(async move {
-            let timeout_timer = std::time::Instant::now();
-            let mut first_sent = false;
-            loop {
-                let is_a = match downstream.safe_lock(|d| !d.authorized_names.is_empty()) {
-                    Ok(is_a) => is_a,
-                    Err(_e) => {
-                        debug!("\nDownstream: Poison Lock - authorized_names\n");
-                        break;
-                    }
-                };
-                if is_a && !first_sent && last_notify.is_some() {
-                    let target = handle_result!(
-                        tx_status_notify,
-                        Self::hash_rate_to_target(downstream.clone())
-                    );
-                    // make sure the mining start time is initialized and reset number of shares
-                    // submitted
-                    handle_result!(
-                        tx_status_notify,
-                        Self::init_difficulty_management(downstream.clone(), &target).await
-                    );
-                    let message =
-                        handle_result!(tx_status_notify, Self::get_set_difficulty(target));
-                    handle_result!(
-                        tx_status_notify,
-                        Downstream::send_message_downstream(downstream.clone(), message).await
-                    );
-
-                    let sv1_mining_notify_msg = last_notify.clone().unwrap();
-
-                    let message: json_rpc::Message = sv1_mining_notify_msg.into();
-                    handle_result!(
-                        tx_status_notify,
-                        Downstream::send_message_downstream(downstream.clone(), message).await
-                    );
-                    if let Err(_e) = downstream.clone().safe_lock(|s| {
-                        s.first_job_received = true;
-                    }) {
-                        debug!("\nDownstream: Poison Lock - first_job_received\n");
-                        break;
-                    }
-                    first_sent = true;
-                } else if is_a {
-                    // if hashrate has changed, update difficulty management, and send new
-                    // mining.set_difficulty
-                    select! {
-                        res = rx_sv1_notify.recv().fuse() => {
-                            // if hashrate has changed, update difficulty management, and send new mining.set_difficulty
-                            handle_result!(tx_status_notify, Self::try_update_difficulty_settings(downstream.clone()).await);
-
-                            let sv1_mining_notify_msg = handle_result!(tx_status_notify, res);
-                            let message: json_rpc::Message = sv1_mining_notify_msg.clone().into();
-
-                            handle_result!(tx_status_notify, Downstream::send_message_downstream(downstream.clone(), message).await);
-                        },
-                        _ = rx_shutdown.recv().fuse() => {
+            tokio::select!(
+                _ = recv_stop_signal.changed() => {
+                },
+                _ = async  {
+                    let timeout_timer = std::time::Instant::now();
+                    let mut first_sent = false;
+                    loop {
+                        let is_a = match downstream.safe_lock(|d| !d.authorized_names.is_empty()) {
+                            Ok(is_a) => is_a,
+                            Err(_e) => {
+                                debug!("\nDownstream: Poison Lock - authorized_names\n");
                                 break;
                             }
-                    };
-                } else {
-                    // timeout connection if miner does not send the authorize message after sending
-                    // a subscribe
-                    if timeout_timer.elapsed().as_secs() > SUBSCRIBE_TIMEOUT_SECS {
-                        debug!(
-                            "Downstream: miner.subscribe/miner.authorize TIMOUT for {}",
-                            &host
-                        );
-                        break;
+                        };
+                        if is_a && !first_sent && last_notify.is_some() {
+                            let target = handle_result!(
+                                tx_status_notify,
+                                Self::hash_rate_to_target(downstream.clone())
+                            );
+                            // make sure the mining start time is initialized and reset number of shares
+                            // submitted
+                            handle_result!(
+                                tx_status_notify,
+                                Self::init_difficulty_management(downstream.clone(), &target).await
+                            );
+                            let message =
+                                handle_result!(tx_status_notify, Self::get_set_difficulty(target));
+                            handle_result!(
+                                tx_status_notify,
+                                Downstream::send_message_downstream(downstream.clone(), message).await
+                            );
+
+                            let sv1_mining_notify_msg = last_notify.clone().unwrap();
+
+                            let message: json_rpc::Message = sv1_mining_notify_msg.into();
+                            handle_result!(
+                                tx_status_notify,
+                                Downstream::send_message_downstream(downstream.clone(), message).await
+                            );
+                            if let Err(_e) = downstream.clone().safe_lock(|s| {
+                                s.first_job_received = true;
+                            }) {
+                                debug!("\nDownstream: Poison Lock - first_job_received\n");
+                                break;
+                            }
+                            first_sent = true;
+                        } else if is_a {
+                            // if hashrate has changed, update difficulty management, and send new
+                            // mining.set_difficulty
+                            select! {
+                                res = rx_sv1_notify.recv().fuse() => {
+                                    // if hashrate has changed, update difficulty management, and send new mining.set_difficulty
+                                    handle_result!(tx_status_notify, Self::try_update_difficulty_settings(downstream.clone()).await);
+
+                                    let sv1_mining_notify_msg = handle_result!(tx_status_notify, res);
+                                    let message: json_rpc::Message = sv1_mining_notify_msg.clone().into();
+
+                                    handle_result!(tx_status_notify, Downstream::send_message_downstream(downstream.clone(), message).await);
+                                },
+                                _ = rx_shutdown.recv().fuse() => {
+                                    break;
+                                }
+                            };
+                        } else {
+                            // timeout connection if miner does not send the authorize message after sending
+                            // a subscribe
+                            if timeout_timer.elapsed().as_secs() > SUBSCRIBE_TIMEOUT_SECS {
+                                debug!(
+                                    "Downstream: miner.subscribe/miner.authorize TIMOUT for {}",
+                                    &host
+                                );
+                                break;
+                            }
+                            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                        }
                     }
-                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                }
-            }
-            let _ = Self::remove_miner_hashrate_from_channel(self_);
-            kill(&tx_shutdown).await;
-            warn!(
-                "Downstream: Shutting down sv1 downstream job notifier for {}",
-                &host
-            );
+                    let _ = Self::remove_miner_hashrate_from_channel(self_);
+                    kill(&tx_shutdown).await;
+                    warn!(
+                        "Downstream: Shutting down sv1 downstream job notifier for {}",
+                        &host
+                    );
+                } => {}
+            )
         });
     }
 
@@ -328,46 +350,55 @@ impl Downstream {
         bridge: Arc<Mutex<crate::proxy::Bridge>>,
         downstream_difficulty_config: DownstreamDifficultyConfig,
         upstream_difficulty_config: Arc<Mutex<UpstreamDifficultyConfig>>,
+        recv_stop_signal: tokio::sync::watch::Receiver<()>,
     ) {
+        let mut cloned_recv_stop_signal = recv_stop_signal.clone();
         tokio::task::spawn({
             async move {
-                let listener = TcpListener::bind(downstream_addr).await.unwrap();
+                tokio::select!(
+                _ = cloned_recv_stop_signal.changed() => {
+                }
+                _ = async  {
+                    let listener = TcpListener::bind(downstream_addr).await.unwrap();
 
-                while let Ok((stream, _)) = listener.accept().await {
-                    let expected_hash_rate =
-                        downstream_difficulty_config.min_individual_miner_hashrate;
-                    let open_sv1_downstream = bridge
-                        .safe_lock(|s| s.on_new_sv1_connection(expected_hash_rate))
-                        .unwrap();
+                    while let Ok((stream, _)) = listener.accept().await {
+                        let expected_hash_rate =
+                            downstream_difficulty_config.min_individual_miner_hashrate;
+                        let open_sv1_downstream = bridge
+                            .safe_lock(|s| s.on_new_sv1_connection(expected_hash_rate))
+                            .unwrap();
 
-                    let host = stream.peer_addr().unwrap().to_string();
+                        let host = stream.peer_addr().unwrap().to_string();
 
-                    match open_sv1_downstream {
-                        Ok(opened) => {
-                            info!("PROXY SERVER - ACCEPTING FROM DOWNSTREAM: {}", host);
-                            Downstream::new_downstream(
-                                stream,
-                                opened.channel_id,
-                                tx_sv1_submit.clone(),
-                                tx_mining_notify.subscribe(),
-                                tx_status.listener_to_connection(),
-                                opened.extranonce,
-                                opened.last_notify,
-                                opened.extranonce2_len as usize,
-                                host,
-                                downstream_difficulty_config.clone(),
-                                upstream_difficulty_config.clone(),
-                            )
-                            .await;
-                        }
-                        Err(e) => {
-                            tracing::error!(
-                                "Failed to create a new downstream connection: {:?}",
-                                e
-                            );
+                        match open_sv1_downstream {
+                            Ok(opened) => {
+                                info!("PROXY SERVER - ACCEPTING FROM DOWNSTREAM: {}", host);
+                                Downstream::new_downstream(
+                                    stream,
+                                    opened.channel_id,
+                                    tx_sv1_submit.clone(),
+                                    tx_mining_notify.subscribe(),
+                                    tx_status.listener_to_connection(),
+                                    opened.extranonce,
+                                    opened.last_notify,
+                                    opened.extranonce2_len as usize,
+                                    host,
+                                    downstream_difficulty_config.clone(),
+                                    upstream_difficulty_config.clone(),
+                                    recv_stop_signal.clone()
+                                )
+                                    .await;
+                                }
+                            Err(e) => {
+                                tracing::error!(
+                                    "Failed to create a new downstream connection: {:?}",
+                                    e
+                                );
+                            }
                         }
                     }
-                }
+                } => {}
+                )
             }
         });
     }

@@ -152,37 +152,45 @@ impl Bridge {
 
     /// Starts the tasks that receive SV1 and SV2 messages to be translated and sent to their
     /// respective roles.
-    pub fn start(self_: Arc<Mutex<Self>>) {
-        Self::handle_new_prev_hash(self_.clone());
-        Self::handle_new_extended_mining_job(self_.clone());
-        Self::handle_downstream_messages(self_);
+    pub fn start(self_: Arc<Mutex<Self>>, recv_stop_signal: tokio::sync::watch::Receiver<()>) {
+        Self::handle_new_prev_hash(self_.clone(), recv_stop_signal.clone());
+        Self::handle_new_extended_mining_job(self_.clone(), recv_stop_signal.clone());
+        Self::handle_downstream_messages(self_, recv_stop_signal);
     }
 
     /// Receives a `DownstreamMessages` message from the `Downstream`, handles based on the
     /// variant received.
-    fn handle_downstream_messages(self_: Arc<Mutex<Self>>) {
+    fn handle_downstream_messages(
+        self_: Arc<Mutex<Self>>,
+        mut recv_stop_signal: tokio::sync::watch::Receiver<()>,
+    ) {
         let (rx_sv1_downstream, tx_status) = self_
             .safe_lock(|s| (s.rx_sv1_downstream.clone(), s.tx_status.clone()))
             .unwrap();
         tokio::task::spawn(async move {
-            loop {
-                let msg = handle_result!(tx_status, rx_sv1_downstream.clone().recv().await);
-
-                match msg {
-                    DownstreamMessages::SubmitShares(share) => {
-                        handle_result!(
-                            tx_status,
-                            Self::handle_submit_shares(self_.clone(), share).await
-                        );
-                    }
-                    DownstreamMessages::SetDownstreamTarget(new_target) => {
-                        handle_result!(
-                            tx_status,
-                            Self::handle_update_downstream_target(self_.clone(), new_target)
-                        );
-                    }
-                };
+            tokio::select!(
+            _ = recv_stop_signal.changed() => {
             }
+            _ = async {
+                loop {
+                    let msg = handle_result!(tx_status, rx_sv1_downstream.clone().recv().await);
+                    match msg {
+                        DownstreamMessages::SubmitShares(share) => {
+                            handle_result!(
+                                tx_status,
+                                Self::handle_submit_shares(self_.clone(), share).await
+                            );
+                        }
+                        DownstreamMessages::SetDownstreamTarget(new_target) => {
+                            handle_result!(
+                                tx_status,
+                                Self::handle_update_downstream_target(self_.clone(), new_target)
+                            );
+                        }
+                    };
+                }
+            } => {}
+            )
         });
     }
     /// receives a `SetDownstreamTarget` and updates the downstream target for the channel
@@ -365,7 +373,10 @@ impl Bridge {
     /// that before every received `SetNewPrevHash`, a `NewExtendedMiningJob` with a
     /// corresponding `job_id` has already been received. If this is not the case, an error has
     /// occurred on the Upstream pool role and the connection will close.
-    fn handle_new_prev_hash(self_: Arc<Mutex<Self>>) {
+    fn handle_new_prev_hash(
+        self_: Arc<Mutex<Self>>,
+        mut recv_stop_signal: tokio::sync::watch::Receiver<()>,
+    ) {
         let (tx_sv1_notify, rx_sv2_set_new_prev_hash, tx_status) = self_
             .safe_lock(|s| {
                 (
@@ -377,24 +388,30 @@ impl Bridge {
             .unwrap();
         debug!("Starting handle_new_prev_hash task");
         tokio::task::spawn(async move {
-            loop {
-                // Receive `SetNewPrevHash` from `Upstream`
-                let sv2_set_new_prev_hash: SetNewPrevHash =
-                    handle_result!(tx_status, rx_sv2_set_new_prev_hash.clone().recv().await);
-                debug!(
-                    "handle_new_prev_hash job_id: {:?}",
-                    &sv2_set_new_prev_hash.job_id
-                );
-                handle_result!(
-                    tx_status.clone(),
-                    Self::handle_new_prev_hash_(
-                        self_.clone(),
-                        sv2_set_new_prev_hash,
-                        tx_sv1_notify.clone(),
-                    )
-                    .await
-                )
-            }
+            tokio::select!(
+                _ = recv_stop_signal.changed() => {
+                }
+                _ = async {
+                    loop {
+                        // Receive `SetNewPrevHash` from `Upstream`
+                        let sv2_set_new_prev_hash: SetNewPrevHash =
+                            handle_result!(tx_status, rx_sv2_set_new_prev_hash.clone().recv().await);
+                        debug!(
+                            "handle_new_prev_hash job_id: {:?}",
+                            &sv2_set_new_prev_hash.job_id
+                        );
+                        handle_result!(
+                            tx_status.clone(),
+                            Self::handle_new_prev_hash_(
+                                self_.clone(),
+                                sv2_set_new_prev_hash,
+                                tx_sv1_notify.clone(),
+                            )
+                            .await
+                        )
+                    }
+                } => {}
+            )
         });
     }
 
@@ -459,7 +476,10 @@ impl Bridge {
     /// `Downstream`. If `future_job=false` but this job's `job_id` does not match the current SV2
     /// `SetNewPrevHash` `job_id`, an error has occurred on the Upstream pool role and the
     /// connection will close.
-    fn handle_new_extended_mining_job(self_: Arc<Mutex<Self>>) {
+    fn handle_new_extended_mining_job(
+        self_: Arc<Mutex<Self>>,
+        mut recv_stop_signal: tokio::sync::watch::Receiver<()>,
+    ) {
         let (tx_sv1_notify, rx_sv2_new_ext_mining_job, tx_status) = self_
             .safe_lock(|s| {
                 (
@@ -471,28 +491,34 @@ impl Bridge {
             .unwrap();
         debug!("Starting handle_new_extended_mining_job task");
         tokio::task::spawn(async move {
-            loop {
-                // Receive `NewExtendedMiningJob` from `Upstream`
-                let sv2_new_extended_mining_job: NewExtendedMiningJob = handle_result!(
-                    tx_status.clone(),
-                    rx_sv2_new_ext_mining_job.clone().recv().await
-                );
-                debug!(
-                    "handle_new_extended_mining_job job_id: {:?}",
-                    &sv2_new_extended_mining_job.job_id
-                );
-                handle_result!(
-                    tx_status,
-                    Self::handle_new_extended_mining_job_(
-                        self_.clone(),
-                        sv2_new_extended_mining_job,
-                        tx_sv1_notify.clone(),
-                    )
-                    .await
-                );
-                crate::upstream_sv2::upstream::IS_NEW_JOB_HANDLED
-                    .store(true, std::sync::atomic::Ordering::SeqCst);
-            }
+            tokio::select!(
+                _ = recv_stop_signal.changed() => {
+                }
+                _ = async {
+                    loop {
+                        // Receive `NewExtendedMiningJob` from `Upstream`
+                        let sv2_new_extended_mining_job: NewExtendedMiningJob = handle_result!(
+                            tx_status.clone(),
+                            rx_sv2_new_ext_mining_job.clone().recv().await
+                        );
+                        debug!(
+                            "handle_new_extended_mining_job job_id: {:?}",
+                            &sv2_new_extended_mining_job.job_id
+                        );
+                        handle_result!(
+                            tx_status,
+                            Self::handle_new_extended_mining_job_(
+                                self_.clone(),
+                                sv2_new_extended_mining_job,
+                                tx_sv1_notify.clone(),
+                            )
+                            .await
+                        );
+                        crate::upstream_sv2::upstream::IS_NEW_JOB_HANDLED
+                            .store(true, std::sync::atomic::Ordering::SeqCst);
+                        }
+                } => {}
+            )
         });
     }
 }
