@@ -154,9 +154,13 @@ impl Upstream {
         );
 
         // Channel to send and receive messages to the SV2 Upstream role
-        let (receiver, sender) = Connection::new(socket, HandshakeRole::Initiator(initiator), recv_stop_signal)
-            .await
-            .unwrap();
+        let (receiver, sender) = Connection::new(
+            socket,
+            HandshakeRole::Initiator(initiator),
+            recv_stop_signal,
+        )
+        .await
+        .unwrap();
         // Initialize `UpstreamConnection` with channel for SV2 Upstream role communication and
         // channel for downstream Translator Proxy communication
         let connection = UpstreamConnection { receiver, sender };
@@ -292,13 +296,14 @@ impl Upstream {
                 )
             })
             .map_err(|_| PoisonLock)?;
+        let mut cloned_recv_stop_signal = recv_stop_signal.clone();
         {
             let self_ = self_.clone();
             let tx_status = tx_status.clone();
             tokio::task::spawn(async move {
                 // No need to start diff management immediatly
                 tokio::select!(
-                    _ = recv_stop_signal.changed() => {
+                    _ = cloned_recv_stop_signal.changed() => {
                         info!("Stopping diff management");
                     }
                     _ = async {
@@ -315,6 +320,11 @@ impl Upstream {
         }
 
         tokio::task::spawn(async move {
+            tokio::select!(
+                    _ = recv_stop_signal.changed() => {
+                        info!("stopping messges handler");
+                    }
+                _ = async {
             loop {
                 // Waiting to receive a message from the SV2 Upstream role
                 let incoming = handle_result!(tx_status, recv.recv().await);
@@ -446,6 +456,10 @@ impl Upstream {
                     }
                 }
             }
+
+                } => {}
+
+                );
         });
 
         Ok(())
@@ -472,7 +486,10 @@ impl Upstream {
     }
 
     #[allow(clippy::result_large_err)]
-    pub fn handle_submit(self_: Arc<Mutex<Self>>) -> ProxyResult<'static, ()> {
+    pub fn handle_submit(
+        self_: Arc<Mutex<Self>>,
+        mut recv_stop_signal: tokio::sync::watch::Receiver<()>,
+    ) -> ProxyResult<'static, ()> {
         let clone = self_.clone();
         let (tx_frame, receiver, tx_status) = clone
             .safe_lock(|s| {
@@ -485,6 +502,11 @@ impl Upstream {
             .map_err(|_| PoisonLock)?;
 
         tokio::task::spawn(async move {
+            tokio::select!(
+                    _ = recv_stop_signal.changed() => {
+                        info!("stopping messges handler");
+                    }
+                _ = async {
             loop {
                 let mut sv2_submit: SubmitSharesExtended =
                     handle_result!(tx_status, receiver.recv().await);
@@ -519,6 +541,8 @@ impl Upstream {
                     })
                 );
             }
+                } => {}
+                );
         });
 
         Ok(())

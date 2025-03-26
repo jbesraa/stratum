@@ -201,6 +201,7 @@ impl TranslatorSv2 {
             tokio::select!(
                 _ = cloned_recv_stop_signal.changed() => {
                     info!("Received stop signal");
+                    drop(upstream);
                     return;
                 }
                 _ = async {
@@ -229,7 +230,7 @@ impl TranslatorSv2 {
                     debug!("Finished starting upstream listener");
                     // Start task handler to receive submits from the SV1 Downstream role once it
                     // connects
-                    if let Err(e) = upstream_sv2::Upstream::handle_submit(upstream.clone()) {
+                    if let Err(e) = upstream_sv2::Upstream::handle_submit(upstream.clone(),recv_stop_signal.clone()) {
                         error!("Failed to create submit handler: {}", e);
                         return;
                     }
