@@ -36,6 +36,7 @@ impl Connection {
     pub async fn new<'a, Message: Serialize + Deserialize<'a> + GetSize + Send + 'static>(
         stream: TcpStream,
         role: HandshakeRole,
+        mut stop: tokio::sync::watch::Receiver<()>,
     ) -> Result<
         (
             Receiver<StandardEitherFrame<Message>>,
@@ -63,8 +64,14 @@ impl Connection {
         let cloned1 = connection.clone();
         let cloned2 = connection.clone();
 
+        let mut cloned_stop = stop.clone();
         task::spawn(async move {
             select!(
+                _ = cloned_stop.changed() => {
+                    error!("Shutting down from changed signal: Reader");
+                    sender_incoming.close();
+                    drop(reader);
+                },
               _ = tokio::signal::ctrl_c() => { },
               _ = async {
                 let mut decoder = StandardNoiseDecoder::<Message>::new();
@@ -109,6 +116,11 @@ impl Connection {
         let receiver_outgoing_cloned = receiver_outgoing.clone();
         task::spawn(async move {
             select!(
+                _ = stop.changed() => {
+                      let _ = writer.shutdown().await;
+                    drop(writer);
+                    error!("Shutting down from changed signal: Writer");
+                },
               _ = tokio::signal::ctrl_c() => { },
               _ = async {
                 let mut encoder = codec_sv2::NoiseEncoder::<Message>::new();

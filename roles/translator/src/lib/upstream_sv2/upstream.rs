@@ -13,7 +13,7 @@ use binary_sv2::u256_from_int;
 use codec_sv2::{HandshakeRole, Initiator};
 use error_handling::handle_result;
 use key_utils::Secp256k1PublicKey;
-use network_helpers_sv2::noise_connection::Connection;
+use network_helpers_sv2::with_cancel::Connection;
 use roles_logic_sv2::{
     common_messages_sv2::{Protocol, SetupConnection},
     common_properties::{IsMiningUpstream, IsUpstream},
@@ -36,7 +36,6 @@ use std::{
 };
 use tokio::{
     net::TcpStream,
-    task::AbortHandle,
     time::{sleep, Duration},
 };
 use tracing::{debug, error, info, warn};
@@ -103,7 +102,6 @@ pub struct Upstream {
     // and the upstream just needs to occasionally check if it has changed more than
     // than the configured percentage
     pub(super) difficulty_config: Arc<Mutex<UpstreamDifficultyConfig>>,
-    task_collector: Arc<Mutex<Vec<(AbortHandle, String)>>>,
 }
 
 impl PartialEq for Upstream {
@@ -130,7 +128,7 @@ impl Upstream {
         tx_status: status::Sender,
         target: Arc<Mutex<Vec<u8>>>,
         difficulty_config: Arc<Mutex<UpstreamDifficultyConfig>>,
-        task_collector: Arc<Mutex<Vec<(AbortHandle, String)>>>,
+        recv_stop_signal: tokio::sync::watch::Receiver<()>,
     ) -> ProxyResult<'static, Arc<Mutex<Self>>> {
         // Connect to the SV2 Upstream role retry connection every 5 seconds.
         let socket = loop {
@@ -156,9 +154,13 @@ impl Upstream {
         );
 
         // Channel to send and receive messages to the SV2 Upstream role
-        let (receiver, sender, _, _) = Connection::new(socket, HandshakeRole::Initiator(initiator))
-            .await
-            .unwrap();
+        let (receiver, sender) = Connection::new(
+            socket,
+            HandshakeRole::Initiator(initiator),
+            recv_stop_signal,
+        )
+        .await
+        .unwrap();
         // Initialize `UpstreamConnection` with channel for SV2 Upstream role communication and
         // channel for downstream Translator Proxy communication
         let connection = UpstreamConnection { receiver, sender };
@@ -179,7 +181,6 @@ impl Upstream {
             tx_status,
             target,
             difficulty_config,
-            task_collector,
         })))
     }
 
@@ -271,11 +272,11 @@ impl Upstream {
     /// Parses the incoming SV2 message from the Upstream role and routes the message to the
     /// appropriate handler.
     #[allow(clippy::result_large_err)]
-    pub fn parse_incoming(self_: Arc<Mutex<Self>>) -> ProxyResult<'static, ()> {
+    pub fn parse_incoming(
+        self_: Arc<Mutex<Self>>,
+        mut recv_stop_signal: tokio::sync::watch::Receiver<()>,
+    ) -> ProxyResult<'static, ()> {
         let clone = self_.clone();
-        let task_collector = self_.safe_lock(|s| s.task_collector.clone()).unwrap();
-        let collector1 = task_collector.clone();
-        let collector2 = task_collector.clone();
         let (
             tx_frame,
             tx_sv2_extranonce,
@@ -295,25 +296,35 @@ impl Upstream {
                 )
             })
             .map_err(|_| PoisonLock)?;
+        let mut cloned_recv_stop_signal = recv_stop_signal.clone();
         {
             let self_ = self_.clone();
             let tx_status = tx_status.clone();
-            let start_diff_management = tokio::task::spawn(async move {
+            tokio::task::spawn(async move {
                 // No need to start diff management immediatly
-                sleep(Duration::from_secs(10)).await;
-                loop {
-                    handle_result!(tx_status, Self::try_update_hashrate(self_.clone()).await);
-                }
-            });
-            let _ = collector1.safe_lock(|a| {
-                a.push((
-                    start_diff_management.abort_handle(),
-                    "start_diff_management".to_string(),
-                ))
+                tokio::select!(
+                    _ = cloned_recv_stop_signal.changed() => {
+                        info!("Stopping diff management");
+                    }
+                    _ = async {
+                        sleep(Duration::from_secs(10)).await;
+                        loop {
+                            handle_result!(
+                                tx_status,
+                                Self::try_update_hashrate(self_.clone()).await
+                            );
+                        }
+                    } => {}
+                )
             });
         }
 
-        let parse_incoming = tokio::task::spawn(async move {
+        tokio::task::spawn(async move {
+            tokio::select!(
+                    _ = recv_stop_signal.changed() => {
+                        info!("stopping messges handler");
+                    }
+                _ = async {
             loop {
                 // Waiting to receive a message from the SV2 Upstream role
                 let incoming = handle_result!(tx_status, recv.recv().await);
@@ -445,9 +456,11 @@ impl Upstream {
                     }
                 }
             }
+
+                } => {}
+
+                );
         });
-        let _ = collector2
-            .safe_lock(|a| a.push((parse_incoming.abort_handle(), "parse_incoming".to_string())));
 
         Ok(())
     }
@@ -473,8 +486,10 @@ impl Upstream {
     }
 
     #[allow(clippy::result_large_err)]
-    pub fn handle_submit(self_: Arc<Mutex<Self>>) -> ProxyResult<'static, ()> {
-        let task_collector = self_.safe_lock(|s| s.task_collector.clone()).unwrap();
+    pub fn handle_submit(
+        self_: Arc<Mutex<Self>>,
+        mut recv_stop_signal: tokio::sync::watch::Receiver<()>,
+    ) -> ProxyResult<'static, ()> {
         let clone = self_.clone();
         let (tx_frame, receiver, tx_status) = clone
             .safe_lock(|s| {
@@ -486,7 +501,12 @@ impl Upstream {
             })
             .map_err(|_| PoisonLock)?;
 
-        let handle_submit = tokio::task::spawn(async move {
+        tokio::task::spawn(async move {
+            tokio::select!(
+                    _ = recv_stop_signal.changed() => {
+                        info!("stopping messges handler");
+                    }
+                _ = async {
             loop {
                 let mut sv2_submit: SubmitSharesExtended =
                     handle_result!(tx_status, receiver.recv().await);
@@ -521,9 +541,9 @@ impl Upstream {
                     })
                 );
             }
+                } => {}
+                );
         });
-        let _ = task_collector
-            .safe_lock(|a| a.push((handle_submit.abort_handle(), "handle_submit".to_string())));
 
         Ok(())
     }

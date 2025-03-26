@@ -50,6 +50,7 @@ pub enum State<'a> {
     UpstreamShutdown(Error<'a>),
     UpstreamTryReconnect(Error<'a>),
     Healthy(String),
+    Shutdown
 }
 
 #[derive(Debug)]

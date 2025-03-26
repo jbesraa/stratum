@@ -59,115 +59,13 @@ pub struct Sniffer {
     messages_from_upstream: MessagesAggregator,
     check_on_drop: bool,
     action: Option<InterceptAction>,
-}
-
-/// Represents an action that [`Sniffer`] can take on intercepted messages.
-#[derive(Debug, Clone)]
-pub enum InterceptAction {
-    /// Prevents a message from being forwarded and stored into the message aggregator.
-    IgnoreMessage(IgnoreMessage),
-    /// Intercepts and modifies a message before forwarding it.
-    ReplaceMessage(Box<ReplaceMessage>),
-}
-
-impl InterceptAction {
-    /// Returns the action if it is `IgnoreMessage` or `ReplaceMessage`
-    /// with the specified message type.
-    pub fn find_matching_action(
-        &self,
-        msg_type: MsgType,
-        direction: MessageDirection,
-    ) -> Option<&Self> {
-        match self {
-            InterceptAction::IgnoreMessage(bm)
-                if bm.direction == direction && bm.expected_message_type == msg_type =>
-            {
-                Some(self)
-            }
-
-            InterceptAction::ReplaceMessage(im)
-                if im.direction == direction && im.expected_message_type == msg_type =>
-            {
-                Some(self)
-            }
-
-            _ => None,
-        }
-    }
-}
-/// Defines an action that prevents a message from being forwarded.
-///
-/// When a message matching the specified type and direction is intercepted,
-/// it will not be added to the message aggregator for inspection and will not be
-/// forwarded to the destination. All other messages will continue to be forwarded normally.
-#[derive(Debug, Clone)]
-pub struct IgnoreMessage {
-    direction: MessageDirection,
-    expected_message_type: MsgType,
-}
-
-impl IgnoreMessage {
-    /// Creates a new [`IgnoreMessage`] action.
-    ///
-    /// - `direction`: The direction of the message to be ignored.
-    /// - `expected_message_type`: The type of message to be ignored.
-    pub fn new(direction: MessageDirection, expected_message_type: MsgType) -> Self {
-        IgnoreMessage {
-            direction,
-            expected_message_type,
-        }
-    }
-}
-
-impl From<IgnoreMessage> for InterceptAction {
-    fn from(value: IgnoreMessage) -> Self {
-        InterceptAction::IgnoreMessage(value)
-    }
-}
-
-/// Allows [`Sniffer`] to replace some intercepted message before forwarding it.
-#[derive(Debug, Clone)]
-pub struct ReplaceMessage {
-    direction: MessageDirection,
-    expected_message_type: MsgType,
-    replacement_message: AnyMessage<'static>,
-}
-
-impl ReplaceMessage {
-    /// Constructor of `ReplaceMessage`
-    /// - `direction`: direction of message to be intercepted and replaced
-    /// - `expected_message_type`: type of message to be intercepted and replaced
-    /// - `replacement_message`: message to replace the intercepted one
-    /// - `replacement_message_type`: type of message to replace the intercepted one
-    pub fn new(
-        direction: MessageDirection,
-        expected_message_type: MsgType,
-        replacement_message: AnyMessage<'static>,
-    ) -> Self {
-        Self {
-            direction,
-            expected_message_type,
-            replacement_message,
-        }
-    }
-}
-
-impl From<ReplaceMessage> for InterceptAction {
-    fn from(value: ReplaceMessage) -> Self {
-        InterceptAction::ReplaceMessage(Box::new(value))
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum MessageDirection {
-    ToDownstream,
-    ToUpstream,
+    stop: Arc<std::sync::Mutex<Option<tokio::sync::watch::Sender<()>>>>,
 }
 
 impl Sniffer {
     /// Creates a new sniffer that listens on the given listening address and connects to the given
     /// upstream address.
-    pub async fn new(
+    pub fn new(
         identifier: String,
         listening_address: SocketAddr,
         upstream_address: SocketAddr,
@@ -182,6 +80,7 @@ impl Sniffer {
             messages_from_upstream: MessagesAggregator::new(),
             check_on_drop,
             action,
+            stop: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
@@ -189,27 +88,38 @@ impl Sniffer {
     ///
     /// The sniffer should be started after the upstream role have been initialized and is ready to
     /// accept messages and before the downstream role starts sending messages.
-    pub async fn start(self) {
-        let (downstream_receiver, downstream_sender) =
-            Self::create_downstream(Self::wait_for_client(self.listening_address).await)
-                .await
-                .expect("Failed to create downstream");
-        let (upstream_receiver, upstream_sender) = Self::create_upstream(
-            TcpStream::connect(self.upstream_address)
-                .await
-                .expect("Failed to connect to upstream"),
-        )
-        .await
-        .expect("Failed to create upstream");
-        let downstream_messages = self.messages_from_downstream.clone();
-        let upstream_messages = self.messages_from_upstream.clone();
+    pub fn start(&self) {
+        let listening_address = self.listening_address;
+        let upstream_address = self.upstream_address;
+        let messages_from_downstream = self.messages_from_downstream.clone();
+        let messages_from_upstream = self.messages_from_upstream.clone();
         let action = self.action.clone();
-        let _ = select! {
-            r = Self::recv_from_down_send_to_up(downstream_receiver, upstream_sender, downstream_messages, action.clone(), &self.identifier) => r,
-            r = Self::recv_from_up_send_to_down(upstream_receiver, downstream_sender, upstream_messages, action, &self.identifier) => r,
-        };
-        // wait a bit so we dont drop the sniffer before the test has finished
-        sleep(std::time::Duration::from_secs(1)).await;
+        let identifier = self.identifier.clone();
+        let (send_stop, mut recv_stop) = tokio::sync::watch::channel(());
+        if let Ok(mut s_tx) = self.stop.lock() {
+            *s_tx = Some(send_stop);
+        } else {
+            panic!("Failed to access Pool status lock");
+        }
+        tokio::spawn(async move {
+            let (downstream_receiver, downstream_sender) =
+                Self::create_downstream(Self::wait_for_client(listening_address).await)
+                    .await
+                    .expect("Failed to create downstream");
+            let (upstream_receiver, upstream_sender) = Self::create_upstream(
+                TcpStream::connect(upstream_address)
+                    .await
+                    .expect("Failed to connect to upstream"),
+            )
+            .await
+            .expect("Failed to create upstream");
+            select! {
+                _ = recv_stop.changed() => { },
+                _ = tokio::signal::ctrl_c() => { },
+                _ = Self::recv_from_down_send_to_up(downstream_receiver, upstream_sender, messages_from_downstream, action.clone(), &identifier) => { },
+                _ = Self::recv_from_up_send_to_down(upstream_receiver, downstream_sender, messages_from_upstream, action, &identifier) => { },
+            };
+        });
     }
 
     /// Returns the oldest message sent by downstream.
@@ -234,6 +144,74 @@ impl Sniffer {
         self.messages_from_upstream.next_message()
     }
 
+    /// Waits until a message of the specified type is received into the `message_direction`
+    /// corresponding queue.
+    pub async fn wait_for_message_type(
+        &self,
+        message_direction: MessageDirection,
+        message_type: u8,
+    ) {
+        let now = std::time::Instant::now();
+        loop {
+            let has_message_type = match message_direction {
+                MessageDirection::ToDownstream => {
+                    self.messages_from_upstream.has_message_type(message_type)
+                }
+                MessageDirection::ToUpstream => {
+                    self.messages_from_downstream.has_message_type(message_type)
+                }
+            };
+
+            // ready to unblock test runtime
+            if has_message_type {
+                return;
+            }
+
+            // 1 min timeout
+            // only for worst case, ideally should never be triggered
+            if now.elapsed().as_secs() > 60 {
+                panic!("Timeout waiting for message type");
+            }
+
+            // sleep to reduce async lock contention
+            sleep(Duration::from_secs(1)).await;
+        }
+    }
+
+    /// Similar to `[Sniffer::wait_for_message_type]` but also removes the messages from the queue
+    /// including the specified message type.
+    pub async fn wait_for_message_type_and_clean_queue(
+        &self,
+        message_direction: MessageDirection,
+        message_type: u8,
+    ) -> bool {
+        let now = std::time::Instant::now();
+        loop {
+            let has_message_type = match message_direction {
+                MessageDirection::ToDownstream => self
+                    .messages_from_upstream
+                    .has_message_type_with_remove(message_type),
+                MessageDirection::ToUpstream => self
+                    .messages_from_downstream
+                    .has_message_type_with_remove(message_type),
+            };
+
+            // ready to unblock test runtime
+            if has_message_type {
+                return true;
+            }
+
+            // 1 min timeout
+            // only for worst case, ideally should never be triggered
+            if now.elapsed().as_secs() > 60 {
+                panic!("Timeout waiting for message type");
+            }
+
+            // sleep to reduce async lock contention
+            sleep(Duration::from_secs(1)).await;
+        }
+    }
+
     async fn create_downstream(
         stream: TcpStream,
     ) -> Option<(Receiver<MessageFrame>, Sender<MessageFrame>)> {
@@ -250,7 +228,7 @@ impl Sniffer {
         let responder =
             Responder::from_authority_kp(&pub_key, &prv_key, std::time::Duration::from_secs(10000))
                 .unwrap();
-        if let Ok((receiver_from_client, sender_to_client, _, _)) =
+        if let Ok((receiver_from_client, sender_to_client)) =
             Connection::new::<'static, AnyMessage<'static>>(
                 stream,
                 HandshakeRole::Responder(responder),
@@ -267,7 +245,7 @@ impl Sniffer {
         stream: TcpStream,
     ) -> Option<(Receiver<MessageFrame>, Sender<MessageFrame>)> {
         let initiator = Initiator::without_pk().expect("This fn call can not fail");
-        if let Ok((receiver_from_server, sender_to_server, _, _)) =
+        if let Ok((receiver_from_server, sender_to_server)) =
             Connection::new::<'static, AnyMessage<'static>>(
                 stream,
                 HandshakeRole::Initiator(initiator),
@@ -535,74 +513,6 @@ impl Sniffer {
         }
     }
 
-    /// Waits until a message of the specified type is received into the `message_direction`
-    /// corresponding queue.
-    pub async fn wait_for_message_type(
-        &self,
-        message_direction: MessageDirection,
-        message_type: u8,
-    ) {
-        let now = std::time::Instant::now();
-        loop {
-            let has_message_type = match message_direction {
-                MessageDirection::ToDownstream => {
-                    self.messages_from_upstream.has_message_type(message_type)
-                }
-                MessageDirection::ToUpstream => {
-                    self.messages_from_downstream.has_message_type(message_type)
-                }
-            };
-
-            // ready to unblock test runtime
-            if has_message_type {
-                return;
-            }
-
-            // 1 min timeout
-            // only for worst case, ideally should never be triggered
-            if now.elapsed().as_secs() > 60 {
-                panic!("Timeout waiting for message type");
-            }
-
-            // sleep to reduce async lock contention
-            sleep(Duration::from_secs(1)).await;
-        }
-    }
-
-    /// Similar to `[Sniffer::wait_for_message_type]` but also removes the messages from the queue
-    /// including the specified message type.
-    pub async fn wait_for_message_type_and_clean_queue(
-        &self,
-        message_direction: MessageDirection,
-        message_type: u8,
-    ) -> bool {
-        let now = std::time::Instant::now();
-        loop {
-            let has_message_type = match message_direction {
-                MessageDirection::ToDownstream => self
-                    .messages_from_upstream
-                    .has_message_type_with_remove(message_type),
-                MessageDirection::ToUpstream => self
-                    .messages_from_downstream
-                    .has_message_type_with_remove(message_type),
-            };
-
-            // ready to unblock test runtime
-            if has_message_type {
-                return true;
-            }
-
-            // 10 min timeout
-            // only for worst case, ideally should never be triggered
-            if now.elapsed().as_secs() > 10 * 60 {
-                panic!("Timeout waiting for message type");
-            }
-
-            // sleep to reduce async lock contention
-            sleep(Duration::from_secs(1)).await;
-        }
-    }
-
     /// Checks whether the sniffer has received a message of the specified type.
     pub async fn includes_message_type(
         &self,
@@ -618,6 +528,128 @@ impl Sniffer {
             }
         }
     }
+
+    fn shutdown(&self) {
+        tracing::info!("Attempting to shutdown Sniffer");
+        if let Ok(status_tx) = &self.stop.lock() {
+            if let Some(status_tx) = status_tx.as_ref().cloned() {
+                tracing::info!("Sniffer is running, sending shutdown signal");
+                if let Err(e) = status_tx.send(()) {
+                    tracing::info!("Failed to send shutdown signal to status loop: {:?}", e);
+                } else {
+                    tracing::info!("Sent shutdown signal to Sniffer");
+                }
+            } else {
+                tracing::info!("Sniffer is not running.");
+            }
+        } else {
+            panic!("Failed to access Sniffer status lock");
+        }
+    }
+}
+
+
+/// Represents an action that [`Sniffer`] can take on intercepted messages.
+#[derive(Debug, Clone)]
+pub enum InterceptAction {
+    /// Prevents a message from being forwarded and stored into the message aggregator.
+    IgnoreMessage(IgnoreMessage),
+    /// Intercepts and modifies a message before forwarding it.
+    ReplaceMessage(Box<ReplaceMessage>),
+}
+
+impl InterceptAction {
+    /// Returns the action if it is `IgnoreMessage` or `ReplaceMessage`
+    /// with the specified message type.
+    pub fn find_matching_action(
+        &self,
+        msg_type: MsgType,
+        direction: MessageDirection,
+    ) -> Option<&Self> {
+        match self {
+            InterceptAction::IgnoreMessage(bm)
+                if bm.direction == direction && bm.expected_message_type == msg_type =>
+            {
+                Some(self)
+            }
+
+            InterceptAction::ReplaceMessage(im)
+                if im.direction == direction && im.expected_message_type == msg_type =>
+            {
+                Some(self)
+            }
+
+            _ => None,
+        }
+    }
+}
+/// Defines an action that prevents a message from being forwarded.
+///
+/// When a message matching the specified type and direction is intercepted,
+/// it will not be added to the message aggregator for inspection and will not be
+/// forwarded to the destination. All other messages will continue to be forwarded normally.
+#[derive(Debug, Clone)]
+pub struct IgnoreMessage {
+    direction: MessageDirection,
+    expected_message_type: MsgType,
+}
+
+impl IgnoreMessage {
+    /// Creates a new [`IgnoreMessage`] action.
+    ///
+    /// - `direction`: The direction of the message to be ignored.
+    /// - `expected_message_type`: The type of message to be ignored.
+    pub fn new(direction: MessageDirection, expected_message_type: MsgType) -> Self {
+        IgnoreMessage {
+            direction,
+            expected_message_type,
+        }
+    }
+}
+
+impl From<IgnoreMessage> for InterceptAction {
+    fn from(value: IgnoreMessage) -> Self {
+        InterceptAction::IgnoreMessage(value)
+    }
+}
+
+/// Allows [`Sniffer`] to replace some intercepted message before forwarding it.
+#[derive(Debug, Clone)]
+pub struct ReplaceMessage {
+    direction: MessageDirection,
+    expected_message_type: MsgType,
+    replacement_message: AnyMessage<'static>,
+}
+
+impl ReplaceMessage {
+    /// Constructor of `ReplaceMessage`
+    /// - `direction`: direction of message to be intercepted and replaced
+    /// - `expected_message_type`: type of message to be intercepted and replaced
+    /// - `replacement_message`: message to replace the intercepted one
+    /// - `replacement_message_type`: type of message to replace the intercepted one
+    pub fn new(
+        direction: MessageDirection,
+        expected_message_type: MsgType,
+        replacement_message: AnyMessage<'static>,
+    ) -> Self {
+        Self {
+            direction,
+            expected_message_type,
+            replacement_message,
+        }
+    }
+}
+
+impl From<ReplaceMessage> for InterceptAction {
+    fn from(value: ReplaceMessage) -> Self {
+        InterceptAction::ReplaceMessage(Box::new(value))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MessageDirection {
+    ToDownstream,
+    ToUpstream,
 }
 
 // Utility macro to assert that the downstream and upstream roles have sent specific messages.
@@ -774,6 +806,7 @@ impl Drop for Sniffer {
                 }
             }
         }
+        self.shutdown();
     }
 }
 
