@@ -59,6 +59,7 @@ pub struct Sniffer {
     messages_from_upstream: MessagesAggregator,
     check_on_drop: bool,
     action: Option<InterceptAction>,
+    stop: Arc<std::sync::Mutex<Option<tokio::sync::watch::Sender<()>>>>,
 }
 
 impl Sniffer {
@@ -79,6 +80,7 @@ impl Sniffer {
             messages_from_upstream: MessagesAggregator::new(),
             check_on_drop,
             action,
+            stop: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
@@ -93,6 +95,12 @@ impl Sniffer {
         let messages_from_upstream = self.messages_from_upstream.clone();
         let action = self.action.clone();
         let identifier = self.identifier.clone();
+        let (send_stop, mut recv_stop) = tokio::sync::watch::channel(());
+        if let Ok(mut s_tx) = self.stop.lock() {
+            *s_tx = Some(send_stop);
+        } else {
+            panic!("Failed to access Pool status lock");
+        }
         tokio::spawn(async move {
             let (downstream_receiver, downstream_sender) =
                 Self::create_downstream(Self::wait_for_client(listening_address).await)
@@ -106,6 +114,7 @@ impl Sniffer {
             .await
             .expect("Failed to create upstream");
             select! {
+                _ = recv_stop.changed() => { },
                 _ = tokio::signal::ctrl_c() => { },
                 _ = Self::recv_from_down_send_to_up(downstream_receiver, upstream_sender, messages_from_downstream, action.clone(), &identifier) => { },
                 _ = Self::recv_from_up_send_to_down(upstream_receiver, downstream_sender, messages_from_upstream, action, &identifier) => { },
@@ -519,7 +528,26 @@ impl Sniffer {
             }
         }
     }
+
+    fn shutdown(&self) {
+        tracing::info!("Attempting to shutdown Sniffer");
+        if let Ok(status_tx) = &self.stop.lock() {
+            if let Some(status_tx) = status_tx.as_ref().cloned() {
+                tracing::info!("Sniffer is running, sending shutdown signal");
+                if let Err(e) = status_tx.send(()) {
+                    tracing::info!("Failed to send shutdown signal to status loop: {:?}", e);
+                } else {
+                    tracing::info!("Sent shutdown signal to Sniffer");
+                }
+            } else {
+                tracing::info!("Sniffer is not running.");
+            }
+        } else {
+            panic!("Failed to access Sniffer status lock");
+        }
+    }
 }
+
 
 /// Represents an action that [`Sniffer`] can take on intercepted messages.
 #[derive(Debug, Clone)]
@@ -778,6 +806,7 @@ impl Drop for Sniffer {
                 }
             }
         }
+        self.shutdown();
     }
 }
 

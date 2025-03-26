@@ -183,6 +183,7 @@ impl TranslatorSv2 {
             status::Sender::Upstream(status_tx.clone()),
             target.clone(),
             diff_config.clone(),
+            recv_stop_signal.clone()
         )
         .await
         {
@@ -313,6 +314,12 @@ impl TranslatorSv2 {
     }
 }
 
+impl Drop for TranslatorSv2 {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::TranslatorSv2;
@@ -351,3 +358,4 @@ mod tests {
         assert!(std::net::TcpListener::bind(translator_addr).is_ok());
     }
 }
+
