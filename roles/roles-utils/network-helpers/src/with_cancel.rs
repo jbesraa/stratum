@@ -69,6 +69,8 @@ impl Connection {
             select!(
                 _ = cloned_stop.changed() => {
                     error!("Shutting down from changed signal: Reader");
+                    sender_incoming.close();
+                    drop(reader);
                 },
               _ = tokio::signal::ctrl_c() => { },
               _ = async {
@@ -115,6 +117,8 @@ impl Connection {
         task::spawn(async move {
             select!(
                 _ = stop.changed() => {
+                      let _ = writer.shutdown().await;
+                    drop(writer);
                     error!("Shutting down from changed signal: Writer");
                 },
               _ = tokio::signal::ctrl_c() => { },
