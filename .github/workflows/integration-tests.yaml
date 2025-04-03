@@ -6,28 +6,80 @@ on:
 name: Integration Tests
 
 jobs:
-  ci:
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        os:
-          - ubuntu-latest
-        include:
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-
+  # Build Job remains similar - ensures compilation and caches artifacts
+  build:
+    runs-on: ubuntu-latest
     steps:
-      - name: Use stable toolchain
+      - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: actions-rs/toolchain@v1
         with:
           profile: minimal
           toolchain: stable
           override: true
 
-      - name: Roles Integration Tests
-        run: |
-         RUST_BACKTRACE=1 RUST_LOG=debug cargo test --manifest-path=test/integration-tests/Cargo.toml --verbose --test '*' -- --nocapture
+      # Optional: Build only tests if faster? cargo build --tests
+      # Or just ensure it builds before caching
+      - name: Build project (and tests)
+        run: cargo build --manifest-path=test/integration-tests/Cargo.toml --verbose
 
-      - name: SV1 Integration Tests
-        run: |
-         RUST_BACKTRACE=1 RUST_LOG=debug cargo test --manifest-path=test/integration-tests/Cargo.toml --verbose --test 'sv1' --features sv1 -- --nocapture
+      - name: Cache Dependencies and Build Artifacts
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            # Cache target dirs - crucial for the test job to reuse
+            target/
+            test/integration-tests/target/
+          key: ${{ runner.os }}-cargo-build-${{ hashFiles('**/Cargo.lock') }}
+          # restore-keys: |
+          #  ${{ runner.os }}-cargo-build-
+
+  # Single Job to run ALL integration tests serially
+  test-integration:
+    needs: build # Depends on the build job
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          override: true
+
+      # Restore the cache created by the build job
+      - name: Restore Cache
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+            test/integration-tests/target/
+          # Use the same key as the build job to ensure cache hit
+          key: ${{ runner.os }}-cargo-build-${{ hashFiles('**/Cargo.lock') }}
+          # restore-keys: |
+          #  ${{ runner.os }}-cargo-build-
+
+      - name: Run All Integration Tests
+        # Runs all tests within the integration test crate serially
+        # Features flag still applied if needed globally for tests,
+        # otherwise tests needing specific features might need conditional logic
+        # or separate crates/run commands if absolutely necessary.
+        run: >
+          RUST_BACKTRACE=1 RUST_LOG=debug cargo test
+          --manifest-path=test/integration-tests/Cargo.toml
+          --verbose
+          # Add --features sv1 here ONLY if ALL tests need it or tolerate it
+          # Otherwise, tests needing features might fail or need different handling
+          -- --nocapture
