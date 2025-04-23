@@ -63,6 +63,7 @@ impl Connection {
         let cloned1 = connection.clone();
         let cloned2 = connection.clone();
 
+        let receiver_outgoing_cloned = receiver_outgoing.clone();
         task::spawn(async move {
             select!(
               _ = tokio::signal::ctrl_c() => { },
@@ -103,13 +104,6 @@ impl Connection {
                   }
                 }
               } => {}
-            );
-        });
-
-        let receiver_outgoing_cloned = receiver_outgoing.clone();
-        task::spawn(async move {
-            select!(
-              _ = tokio::signal::ctrl_c() => { },
               _ = async {
                 let mut encoder = codec_sv2::NoiseEncoder::<Message>::new();
                 loop {

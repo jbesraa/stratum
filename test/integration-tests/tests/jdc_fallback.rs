@@ -11,10 +11,10 @@ use std::convert::TryInto;
 // the currently connected pool.
 //
 // This ignore directive can be removed once this issue is resolved: https://github.com/stratum-mining/stratum/issues/1574.
-#[ignore]
 #[tokio::test]
 async fn test_jdc_pool_fallback_after_submit_rejection() {
-    start_tracing();
+    // start_tracing();
+    console_subscriber::init();
     let (tp, tp_addr) = start_template_provider(None);
     let (_pool_1, pool_addr_1) = start_pool(Some(tp_addr)).await;
     // Sniffer between JDC and first pool
@@ -60,12 +60,15 @@ async fn test_jdc_pool_fallback_after_submit_rejection() {
         .wait_for_message_type(MessageDirection::ToUpstream, MESSAGE_TYPE_SETUP_CONNECTION)
         .await;
     let (_translator, sv2_translator_addr) = start_sv2_translator(jdc_addr);
-    let _ = start_mining_device_sv1(sv2_translator_addr, false, None);
+    let _ = start_mining_device_sv1(sv2_translator_addr, true, None);
     // Assert that JDC switched to the second (Pool,JDS) pair
+    dbg!("hhhhhhhhhhhhhhhhhhhhhhhhhhhhh");
     sniffer_2
         .wait_for_message_type(MessageDirection::ToUpstream, MESSAGE_TYPE_SETUP_CONNECTION)
         .await;
+    dbg!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
     sniffer_4
         .wait_for_message_type(MessageDirection::ToUpstream, MESSAGE_TYPE_SETUP_CONNECTION)
         .await;
+    dbg!("bbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
 }

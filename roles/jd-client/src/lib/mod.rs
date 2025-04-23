@@ -148,7 +148,6 @@ impl JobDeclaratorClient {
                                 }
                                 status::State::UpstreamRogue => {
                                     error!("Changing Pool");
-                                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                                     task_collector
                                         .safe_lock(|s| {
                                             for handle in s {
@@ -157,7 +156,6 @@ impl JobDeclaratorClient {
                                         })
                                         .unwrap();
                                     upstream_index += 1;
-                                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                                     break;
                                 }
                                 status::State::Healthy(msg) => {
@@ -400,7 +398,7 @@ impl PoolChangerTrigger {
     pub fn start(&mut self, sender: status::Sender) {
         let timeout = self.timeout;
         let task = tokio::task::spawn(async move {
-            tokio::time::sleep(timeout).await;
+            // tokio::time::sleep(timeout).await;
             let _ = sender
                 .send(status::Status {
                     state: status::State::UpstreamRogue,

@@ -103,7 +103,7 @@ impl Client {
         // Upstream via `sender_outgoing`
         let (sender_share, receiver_share) = unbounded();
 
-        let (send_stop_submitting, mut recv_stop_submitting) = tokio::sync::watch::channel(false);
+        let (send_stop_submitting, recv_stop_submitting) = tokio::sync::watch::channel(false);
         // Instantiates a new `Miner` (a mock of an actual Mining Device) with a job id of 0.
         let miner = Arc::new(Mutex::new(Miner::new(0)));
 
@@ -144,6 +144,8 @@ impl Client {
                 } => {}
             )
         });
+        let (send_stop_listening_miner_send_share, recv_stop_listening_miner_send_share) =
+            std::sync::mpsc::channel::<()>();
 
         // Waits to receive a message from `sender_outgoing` and writes it to the socket for the
         // Upstream to receive
@@ -151,11 +153,19 @@ impl Client {
             tokio::select!(
               _ = tokio::signal::ctrl_c() => { },
               _ = async {
+                  let mut count = 0;
                   loop {
                       let message: String = receiver_outgoing.recv().await.expect("SV1 Miner: Failed to receive message");
                       (writer).write_all(message.as_bytes()).await.expect("SV1 Miner: Failed to write message to socket");
-                      if message.contains("mining.submit") && single_submit {
-                          send_stop_submitting.send(true).expect("SV1 Miner: Failed to send stop submitting");
+                      if message.contains("mining.submit") {
+                          if single_submit {
+                              count += 1;
+                          }
+                          if count == 30 {
+                              send_stop_submitting.send(true).expect("SV1 Miner: Failed to send stop submitting");
+                              send_stop_listening_miner_send_share.send(()).expect("SV1 Miner: Failed to send stop listening");
+                              break;
+                          }
                       }
                   }
               } => {}
@@ -192,8 +202,16 @@ impl Client {
         // message to the Upstream node.
         // Is a separate thread as it can be CPU intensive and we do not want to block the reading
         // and writing of messages to the socket.
+        let mut shares_count = 0;
         std::thread::spawn(move || loop {
+            if recv_stop_listening_miner_send_share.try_recv().is_ok() {
+                break;
+            }
             if miner_cloned.safe_lock(|m| m.next_share()).unwrap().is_ok() {
+                if recv_stop_listening_miner_send_share.try_recv().is_ok() {
+                    break;
+                }
+                shares_count += 1;
                 let nonce = miner_cloned.safe_lock(|m| m.header.unwrap().nonce).unwrap();
                 let time = miner_cloned.safe_lock(|m| m.header.unwrap().time).unwrap();
                 let job_id = miner_cloned.safe_lock(|m| m.job_id).unwrap();
@@ -208,6 +226,9 @@ impl Client {
                     warn!("Share channel is not available");
                     break;
                 }
+                if shares_count == 30 {
+                    break;
+                }
                 // Introduce a delay of 0.2 seconds after sending a share
                 std::thread::sleep(Duration::from_millis(200));
             }
@@ -218,10 +239,12 @@ impl Client {
         // Task to receive relevant candidate block header values needed to construct a
         // `mining.submit` message. This message is contructed as a `client_to_server::Submit` and
         // then serialized into json to be sent to the Upstream via the `sender_outgoing` sender.
+        let mut recv_stop_submitting_0 = recv_stop_submitting.clone();
+        let mut recv_stop_submitting_1 = recv_stop_submitting.clone();
         let cloned = client.clone();
         task::spawn(async move {
             tokio::select!(
-              _ = recv_stop_submitting.changed() => {
+              _ = recv_stop_submitting_0.changed() => {
                 warn!("Stopping miner")
               },
               _ = tokio::signal::ctrl_c() => {
@@ -272,6 +295,9 @@ impl Client {
         // Waits for the `sender_incoming` to get message line from socket to be parsed by the
         // `Client`
         tokio::select!(
+              _ = recv_stop_submitting_1.changed() => {
+                warn!("Stopping miner")
+              },
             _ = tokio::signal::ctrl_c() => {
                 warn!("Stopping sv1 miner");
             },
