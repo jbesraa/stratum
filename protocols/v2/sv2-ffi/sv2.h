@@ -11,10 +11,6 @@ static const uint16_t EXTENSION_TYPE_NO_EXTENSION = 0;
 /// Size of the SV2 frame header in bytes.
 static const uintptr_t SV2_FRAME_HEADER_SIZE = 6;
 
-static const uintptr_t SV2_FRAME_HEADER_LEN_OFFSET = 3;
-
-static const uintptr_t SV2_FRAME_HEADER_LEN_END = 3;
-
 /// Maximum size of an SV2 frame chunk in bytes.
 static const uintptr_t SV2_FRAME_CHUNK_SIZE = 65535;
 
@@ -33,8 +29,6 @@ static const uintptr_t NOISE_FRAME_HEADER_LEN_OFFSET = 0;
 /// encoding. This encoding produces a 64-byte representation of the
 /// X-coordinate of a secp256k1 curve point.
 static const uintptr_t ELLSWIFT_ENCODING_SIZE = 64;
-
-static const uintptr_t RESPONDER_EXPECTED_HANDSHAKE_MESSAGE_SIZE = ELLSWIFT_ENCODING_SIZE;
 
 static const uintptr_t MAC = 16;
 
@@ -121,10 +115,6 @@ static const uint8_t MESSAGE_TYPE_ALLOCATE_MINING_JOB_TOKEN = 80;
 
 static const uint8_t MESSAGE_TYPE_ALLOCATE_MINING_JOB_TOKEN_SUCCESS = 81;
 
-static const uint8_t MESSAGE_TYPE_IDENTIFY_TRANSACTIONS = 83;
-
-static const uint8_t MESSAGE_TYPE_IDENTIFY_TRANSACTIONS_SUCCESS = 84;
-
 static const uint8_t MESSAGE_TYPE_PROVIDE_MISSING_TRANSACTIONS = 85;
 
 static const uint8_t MESSAGE_TYPE_PROVIDE_MISSING_TRANSACTIONS_SUCCESS = 86;
@@ -182,10 +172,6 @@ static const bool CHANNEL_BIT_DECLARE_MINING_JOB = false;
 static const bool CHANNEL_BIT_DECLARE_MINING_JOB_SUCCESS = false;
 
 static const bool CHANNEL_BIT_DECLARE_MINING_JOB_ERROR = false;
-
-static const bool CHANNEL_BIT_IDENTIFY_TRANSACTIONS = false;
-
-static const bool CHANNEL_BIT_IDENTIFY_TRANSACTIONS_SUCCESS = false;
 
 static const bool CHANNEL_BIT_PROVIDE_MISSING_TRANSACTIONS = false;
 
