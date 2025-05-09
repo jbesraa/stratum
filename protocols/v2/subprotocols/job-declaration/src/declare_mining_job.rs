@@ -48,6 +48,8 @@ pub struct DeclareMiningJob<'decoder> {
     pub tx_hash_list_hash: U256<'decoder>,
     /// Extra data which the JDS may require to validate the work.
     pub excess_data: B064K<'decoder>,
+    /// The latest known block hash.
+    pub prev_hash: U256<'decoder>,
 }
 
 /// Messaged used by JDS to accept [`DeclareMiningJob`] message.

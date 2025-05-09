@@ -244,40 +244,42 @@ impl JobDeclarator {
             let tx = consensus::deserialize(&tx).unwrap();
             tx_list.push(tx);
         }
-        let declare_job = DeclareMiningJob {
-            request_id: id,
-            mining_job_token: token.try_into().unwrap(),
-            version: template.version,
-            coinbase_prefix: self_mutex
-                .safe_lock(|s| s.coinbase_tx_prefix.clone())
-                .unwrap(),
-            coinbase_suffix: self_mutex
-                .safe_lock(|s| s.coinbase_tx_suffix.clone())
-                .unwrap(),
-            tx_short_hash_nonce,
-            tx_short_hash_list: hash_lists_tuple(tx_list.clone(), tx_short_hash_nonce).0,
-            tx_hash_list_hash: hash_lists_tuple(tx_list.clone(), tx_short_hash_nonce).1,
-            excess_data, // request transaction data
-        };
-
-        let prev_hash = self_mutex
+        let last_set_new_prev_hash = self_mutex
             .safe_lock(|s| s.last_set_new_prev_hash.clone())
             .unwrap()
             .filter(|_| !template.future_template);
-
-        let last_declare = LastDeclareJob {
-            declare_job: declare_job.clone(),
-            template,
-            prev_hash,
-            coinbase_pool_output,
-            tx_list: tx_list_.clone(),
-        };
-        Self::update_last_declare_job_sent(self_mutex, id, last_declare);
-        let frame: StdFrame =
-            AnyMessage::JobDeclaration(JobDeclaration::DeclareMiningJob(declare_job))
-                .try_into()
-                .unwrap();
-        sender.send(frame.into()).await.unwrap();
+        if let Some(new_prev_hash_message) = last_set_new_prev_hash.clone() {
+            let prev_hash = new_prev_hash_message.prev_hash;
+            let declare_job = DeclareMiningJob {
+                request_id: id,
+                mining_job_token: token.try_into().unwrap(),
+                version: template.version,
+                coinbase_prefix: self_mutex
+                    .safe_lock(|s| s.coinbase_tx_prefix.clone())
+                    .unwrap(),
+                coinbase_suffix: self_mutex
+                    .safe_lock(|s| s.coinbase_tx_suffix.clone())
+                    .unwrap(),
+                tx_short_hash_nonce,
+                tx_short_hash_list: hash_lists_tuple(tx_list.clone(), tx_short_hash_nonce).0,
+                tx_hash_list_hash: hash_lists_tuple(tx_list.clone(), tx_short_hash_nonce).1,
+                excess_data, // request transaction data
+                prev_hash,
+            };
+            let last_declare = LastDeclareJob {
+                declare_job: declare_job.clone(),
+                template,
+                prev_hash: last_set_new_prev_hash,
+                coinbase_pool_output,
+                tx_list: tx_list_.clone(),
+            };
+            Self::update_last_declare_job_sent(self_mutex, id, last_declare);
+            let frame: StdFrame =
+                AnyMessage::JobDeclaration(JobDeclaration::DeclareMiningJob(declare_job))
+                    .try_into()
+                    .unwrap();
+            sender.send(frame.into()).await.unwrap();
+        }
     }
 
     pub fn on_upstream_message(self_mutex: Arc<Mutex<Self>>) {
