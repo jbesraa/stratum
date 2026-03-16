@@ -636,11 +636,19 @@ where
 
         // check if a block was found
         if network_target.is_met_by(share_hash) {
+            if self
+                .share_accounting
+                .is_share_seen(share_hash.to_raw_hash())
+            {
+                return Err(ShareValidationError::DuplicateShare);
+            }
             self.share_accounting.update_share_accounting(
                 job_target.difficulty_float(),
                 share.sequence_number,
                 share_hash.to_raw_hash(),
             );
+            self.share_accounting.increment_blocks_found();
+            self.share_accounting.mark_batch_acknowledged();
 
             let op_pushbytes_pool_miner_tag = self
                 .job_factory
@@ -1055,12 +1063,27 @@ mod tests {
             version: 536870912,
         };
 
-        let res = standard_channel.validate_share(share_valid_block);
+        let res = standard_channel.validate_share(share_valid_block.clone());
 
         assert!(matches!(
             res,
             Ok(ShareValidationResult::BlockFound(_, _, _))
         ));
+        assert_eq!(
+            standard_channel.get_share_accounting().get_blocks_found(),
+            1
+        );
+
+        // re-submitting the same valid block must be rejected as duplicate
+        let res = standard_channel.validate_share(share_valid_block);
+        assert!(matches!(
+            res.unwrap_err(),
+            ShareValidationError::DuplicateShare
+        ));
+        assert_eq!(
+            standard_channel.get_share_accounting().get_blocks_found(),
+            1
+        );
     }
 
     #[test]
