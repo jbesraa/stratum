@@ -115,6 +115,17 @@ impl From<Extranonce> for alloc::vec::Vec<u8> {
     }
 }
 
+pub struct VecMax32Bytes(alloc::vec::Vec<u8>);
+
+impl VecMax32Bytes {
+    pub fn new(i: alloc::vec::Vec<u8>) -> Result<Self, ()> {
+        if i.len() > MAX_EXTRANONCE_LEN {
+            return Err(());
+        }
+        return Ok(Self(i));
+    }
+}
+
 // WARNING: do not derive Copy on this type. Some operations performed to a copy of an extranonce
 // do not affect the original, and this may lead to different extranonce inconsistency
 /// Extranonce bytes which need to be added to the coinbase to form a fully valid submission.
@@ -125,6 +136,18 @@ impl From<Extranonce> for alloc::vec::Vec<u8> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Extranonce {
     extranonce: alloc::vec::Vec<u8>,
+}
+
+impl From<VecMax32Bytes> for Extranonce {
+    fn from(v: VecMax32Bytes) -> Self {
+        Self { extranonce: v.0 }
+    }
+}
+
+impl AsRef<[u8]> for Extranonce {
+    fn as_ref(&self) -> &[u8] {
+        &self.extranonce
+    }
 }
 
 // this function converts a U256 type in little endian to Extranonce type
