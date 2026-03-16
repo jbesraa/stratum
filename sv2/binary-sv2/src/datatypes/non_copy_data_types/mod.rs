@@ -313,6 +313,20 @@ impl From<[u8; 32]> for U256<'_> {
     }
 }
 
+impl<'a> U256<'a> {
+    /// Returns bytes in little-endian order (wire format for Stratum v2)
+    pub fn to_le_bytes(&self) -> [u8; 32] {
+        self.inner_as_ref().try_into().expect("U256 is 32 bytes")
+    }
+
+    /// Returns bytes in big-endian order
+    pub fn to_be_bytes(&self) -> [u8; 32] {
+        let mut ret = self.to_le_bytes();
+        ret.reverse();
+        ret
+    }
+}
+
 #[cfg(feature = "prop_test")]
 impl<'a> U256<'a> {
     pub fn from_gen(g: &mut Gen) -> Self {
